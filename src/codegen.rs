@@ -257,6 +257,12 @@ impl<'ctx> Codegen<'ctx> {
         let concat = i8ptr.fn_type(&[i8ptr.into(), i8ptr.into()], false);
         self.module
             .add_function("pebbles_str_concat", concat, None);
+
+        let streq = self
+            .context
+            .bool_type()
+            .fn_type(&[i8ptr.into(), i8ptr.into()], false);
+        self.module.add_function("pebbles_str_eq", streq, None);
         Ok(())
     }
 
@@ -335,9 +341,14 @@ impl<'ctx> Codegen<'ctx> {
                 value,
                 ..
             } => {
-                let expected = ty.as_ref();
+                let inferred = if ty.is_none() {
+                    Some(self.infer_expr_type(value)?)
+                } else {
+                    None
+                };
+                let expected = ty.as_ref().or(inferred.as_ref());
                 let rhs = self.codegen_expr(value, expected)?;
-                let var_ty = ty.clone().unwrap_or(rhs.ty.clone());
+                let var_ty = ty.clone().or(inferred).unwrap_or(rhs.ty.clone());
                 let alloca = self.create_entry_alloca(name, &var_ty)?;
                 if let Some(val) = rhs.value {
                     self.builder.build_store(alloca, val);
@@ -667,10 +678,25 @@ impl<'ctx> Codegen<'ctx> {
                     ty: ty.clone(),
                 })
             }
-            Expr::If { cond, then, else_, .. } => self.codegen_if_expr(cond, then, else_, expected),
-            Expr::Match { .. } | Expr::Array(_, _) | Expr::Index { .. } => {
-                Err("expression not codegenned yet".into())
+            Expr::If { cond, then, else_, .. } => {
+                let inferred = if expected.is_none() {
+                    Some(self.infer_expr_type(expr)?)
+                } else {
+                    None
+                };
+                let exp = expected.or(inferred.as_ref());
+                self.codegen_if_expr(cond, then, else_, exp)
             }
+            Expr::Match { subject, arms, .. } => {
+                let inferred = if expected.is_none() {
+                    Some(self.infer_expr_type(expr)?)
+                } else {
+                    None
+                };
+                let exp = expected.or(inferred.as_ref());
+                self.codegen_match_expr(subject, arms, exp)
+            }
+            Expr::Array(_, _) | Expr::Index { .. } => Err("expression not codegenned yet".into()),
         }
     }
 
@@ -681,6 +707,12 @@ impl<'ctx> Codegen<'ctx> {
         else_: &Option<Vec<Stmt>>,
         expected: Option<&Type>,
     ) -> Result<CgValue<'ctx>, String> {
+        if expected.is_some()
+            && expected != Some(&Type::Void)
+            && else_.is_none()
+        {
+            return Err("if expression with value requires else".into());
+        }
         let cond_val = self.codegen_expr(cond, Some(&Type::Bool))?;
         let cond_v = cond_val
             .value
@@ -732,6 +764,193 @@ impl<'ctx> Codegen<'ctx> {
             value: Some(phi.as_basic_value()),
             ty,
         })
+    }
+
+    fn codegen_match_expr(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+    ) -> Result<CgValue<'ctx>, String> {
+        let subj_val = self.codegen_expr(subject, None)?;
+        let subj_v = subj_val
+            .value
+            .ok_or_else(|| "match subject expects value".to_string())?;
+        let subj_ty = subj_val.ty.clone();
+
+        let func = self
+            .current_fn
+            .ok_or_else(|| "match outside function".to_string())?;
+        let end_bb = self.context.append_basic_block(func, "match.end");
+        let mut check_bb = self.context.append_basic_block(func, "match.check");
+
+        self.builder.build_unconditional_branch(check_bb);
+        self.builder.position_at_end(check_bb);
+
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, BasicBlock<'ctx>)> = Vec::new();
+        let exp_ty = expected.cloned().unwrap_or(Type::Void);
+
+        for (idx, arm) in arms.iter().enumerate() {
+            let is_last = idx + 1 == arms.len();
+            let arm_bb = self.context.append_basic_block(func, "match.arm");
+            let next_bb = if is_last {
+                end_bb
+            } else {
+                self.context.append_basic_block(func, "match.next")
+            };
+
+            let (cond, bindings) =
+                self.codegen_pattern_cond(&arm.pattern, subj_v, &subj_ty)?;
+
+            if is_last {
+                self.builder
+                    .build_conditional_branch(cond, arm_bb, end_bb);
+            } else {
+                self.builder
+                    .build_conditional_branch(cond, arm_bb, next_bb);
+            }
+
+            self.builder.position_at_end(arm_bb);
+            self.push_scope();
+            for (name, val, ty) in bindings {
+                let alloca = self.create_entry_alloca(&name, &ty)?;
+                self.builder.build_store(alloca, val);
+                self.bind_var(&name, ty, alloca);
+            }
+
+            let arm_val = self.codegen_block(&arm.body, expected)?;
+            self.pop_scope();
+
+            if exp_ty != Type::Void {
+                let v = arm_val.ok_or_else(|| "match arm missing value".to_string())?;
+                incoming.push((v, self.builder.get_insert_block().unwrap()));
+            }
+
+            if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+                self.builder.build_unconditional_branch(end_bb);
+            }
+
+            check_bb = next_bb;
+            if !is_last {
+                self.builder.position_at_end(check_bb);
+            }
+        }
+
+        self.builder.position_at_end(end_bb);
+        if exp_ty == Type::Void {
+            return Ok(CgValue { value: None, ty: exp_ty });
+        }
+        let llvm_ty = self.llvm_type(&exp_ty);
+        let phi = self.builder.build_phi(llvm_ty, "matchtmp");
+        for (v, b) in incoming {
+            phi.add_incoming(&[(&v, b)]);
+        }
+        Ok(CgValue {
+            value: Some(phi.as_basic_value()),
+            ty: exp_ty,
+        })
+    }
+
+    fn codegen_pattern_cond(
+        &mut self,
+        pattern: &Pattern,
+        value: BasicValueEnum<'ctx>,
+        ty: &Type,
+    ) -> Result<(inkwell::values::IntValue<'ctx>, Vec<(String, BasicValueEnum<'ctx>, Type)>), String>
+    {
+        let true_val = self.context.bool_type().const_int(1, false);
+        match pattern {
+            Pattern::Wildcard => Ok((true_val, vec![])),
+            Pattern::Binding(name) => Ok((true_val, vec![(name.clone(), value, ty.clone())])),
+            Pattern::Int(n) => {
+                let v = value.into_int_value();
+                let c = self.context.i32_type().const_int(*n as u64, true);
+                Ok((self.builder.build_int_compare(inkwell::IntPredicate::EQ, v, c, "m_eq"), vec![]))
+            }
+            Pattern::Bool(b) => {
+                let v = value.into_int_value();
+                let c = self.context.bool_type().const_int(u64::from(*b), false);
+                Ok((self.builder.build_int_compare(inkwell::IntPredicate::EQ, v, c, "m_eq"), vec![]))
+            }
+            Pattern::Float(f) => {
+                let v = value.into_float_value();
+                let c = self.context.f64_type().const_float(*f);
+                Ok((self.builder.build_float_compare(inkwell::FloatPredicate::OEQ, v, c, "m_eq"), vec![]))
+            }
+            Pattern::Str(s) => {
+                let f = self
+                    .module
+                    .get_function("pebbles_str_eq")
+                    .ok_or_else(|| "missing pebbles_str_eq".to_string())?;
+                let lit = self
+                    .builder
+                    .build_global_string_ptr(s, "mstr")
+                    .as_pointer_value()
+                    .into();
+                let call = self.builder.build_call(f, &[value, lit], "streq");
+                Ok((call.try_as_basic_value().left().unwrap().into_int_value(), vec![]))
+            }
+            Pattern::None => {
+                if let Type::Optional(_) = ty {
+                    let opt = value.into_struct_value();
+                    let is_some = self
+                        .builder
+                        .build_extract_value(opt, 0, "is_some")
+                        .unwrap()
+                        .into_int_value();
+                    let zero = self.context.bool_type().const_int(0, false);
+                    Ok((self.builder.build_int_compare(inkwell::IntPredicate::EQ, is_some, zero, "isnone"), vec![]))
+                } else {
+                    Err("none pattern on non-optional".into())
+                }
+            }
+            Pattern::Tuple(pats) => {
+                let tup = value.into_struct_value();
+                let mut cond = true_val;
+                let mut binds = Vec::new();
+                let mut elem_types = match ty {
+                    Type::Tuple(ts) => ts.clone(),
+                    _ => return Err("tuple pattern on non-tuple".into()),
+                };
+                for (idx, pat) in pats.iter().enumerate() {
+                    let elem = self
+                        .builder
+                        .build_extract_value(tup, idx as u32, "te")
+                        .unwrap();
+                    let t = elem_types.remove(0);
+                    let (c, mut b) = self.codegen_pattern_cond(pat, elem, &t)?;
+                    cond = self.builder.build_and(cond, c, "m_and");
+                    binds.append(&mut b);
+                }
+                Ok((cond, binds))
+            }
+            Pattern::Struct { name, fields } => {
+                let st = value.into_struct_value();
+                let info = self
+                    .struct_info
+                    .get(name)
+                    .ok_or_else(|| format!("unknown struct '{name}'"))?;
+                let mut cond = true_val;
+                let mut binds = Vec::new();
+                for (field_name, pat) in fields {
+                    let (idx, fty) = info
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (n, _))| n == field_name)
+                        .map(|(i, (_, t))| (i, t.clone()))
+                        .ok_or_else(|| format!("unknown field '{field_name}'"))?;
+                    let field_val = self
+                        .builder
+                        .build_extract_value(st, idx as u32, "sf")
+                        .unwrap();
+                    let (c, mut b) = self.codegen_pattern_cond(pat, field_val, &fty)?;
+                    cond = self.builder.build_and(cond, c, "m_and");
+                    binds.append(&mut b);
+                }
+                Ok((cond, binds))
+            }
+        }
     }
 
     fn codegen_block(
@@ -1178,9 +1397,41 @@ impl<'ctx> Codegen<'ctx> {
                     .ok_or_else(|| format!("unknown method '{method}'"))
             }
             Expr::Cast { ty, .. } => Ok(ty.clone()),
-            Expr::If { .. } | Expr::Match { .. } | Expr::Array(_, _) | Expr::Index { .. } => {
+            Expr::If { then, else_, .. } => {
+                let then_ty = self.infer_block_tail_type(then)?;
+                match else_ {
+                    None => Ok(Type::Void),
+                    Some(stmts) => {
+                        let else_ty = self.infer_block_tail_type(stmts)?;
+                        match (then_ty, else_ty) {
+                            (Some(t), Some(e)) if t == e => Ok(t),
+                            _ => Ok(Type::Void),
+                        }
+                    }
+                }
+            }
+            Expr::Match { arms, .. } => {
+                let mut result: Option<Type> = None;
+                for arm in arms {
+                    let arm_ty = self.infer_block_tail_type(&arm.body)?;
+                    match (&result, arm_ty) {
+                        (None, Some(t)) => result = Some(t),
+                        (Some(existing), Some(t)) if *existing == t => {}
+                        _ => {}
+                    }
+                }
+                Ok(result.unwrap_or(Type::Void))
+            }
+            Expr::Array(_, _) | Expr::Index { .. } => {
                 Err("expression type not implemented yet".into())
             }
+        }
+    }
+
+    fn infer_block_tail_type(&self, stmts: &[Stmt]) -> Result<Option<Type>, String> {
+        match stmts.last() {
+            Some(Stmt::Expr(e)) => Ok(Some(self.infer_expr_type(e)?)),
+            _ => Ok(None),
         }
     }
 
