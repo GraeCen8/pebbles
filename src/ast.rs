@@ -4,6 +4,7 @@ pub enum Token {
     Int(i64),
     Float(f64),
     Str(String),
+    StringLit(String),
     Bool(bool),
     Ident(String),
 
@@ -17,9 +18,12 @@ pub enum Token {
     While,
     For,
     In,
+    Break,
+    Continue,
     Match,
     Struct,
     Impl,
+    Self_,
     As,
     True,
     False,
@@ -43,6 +47,8 @@ pub enum Token {
     Assign,
     PlusAssign,
     MinusAssign,
+    StarAssign,
+    SlashAssign,
     Arrow,    // ->
     FatArrow, // =>
     DotDot,   // ..
@@ -51,13 +57,14 @@ pub enum Token {
     Comma,
     Colon,
     Semicolon,
+    Question, // ?
+    Underscore, // _
     LParen,
     RParen,
     LBrace,
     RBrace,
     LBracket,
     RBracket,
-    Question, // ?
 
     EOF,
 }
