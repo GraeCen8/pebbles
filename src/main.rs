@@ -13,7 +13,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut output = "a.out".to_string();
+    let mut output = format!("{}.pbl", input);
     let mut emit_ir: Option<String> = None;
 
     while let Some(arg) = args.next() {
