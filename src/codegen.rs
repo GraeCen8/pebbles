@@ -441,6 +441,9 @@ impl<'ctx> Codegen<'ctx> {
                 let opt_ty = expected
                     .cloned()
                     .ok_or_else(|| "none requires optional type".to_string())?;
+                if !matches!(opt_ty, Type::Optional(_)) {
+                    return Err("none requires optional type".into());
+                }
                 let llvm_ty = self.llvm_type(&opt_ty).into_struct_type();
                 let mut val = llvm_ty.get_undef();
                 let zero = self.context.bool_type().const_int(0, false);
