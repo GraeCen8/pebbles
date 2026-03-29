@@ -1,8 +1,9 @@
-use crate::ast::Token as Tok;
+pub use crate::ast::Token;
 
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
+    line: usize,
 }
 
 impl Lexer {
@@ -10,15 +11,16 @@ impl Lexer {
         Self {
             input: src.chars().collect(),
             pos: 0,
+            line: 1,
         }
     }
 
-    pub fn tokenize(&mut self) -> Vec<Tok> {
-        let mut tokens: Vec<Tok> = vec![];
+    pub fn tokenize(&mut self) -> Vec<(Token, usize)> {
+        let mut tokens: Vec<(Token, usize)> = vec![];
         loop {
-            let tok = self.next_token();
-            let done = tok == Tok::EOF;
-            tokens.push(tok);
+            let (tok, line) = self.next_token();
+            let done = tok == Token::EOF;
+            tokens.push((tok, line));
             if done {
                 break;
             }
@@ -37,42 +39,52 @@ impl Lexer {
     fn advance(&mut self) -> char {
         let c = self.input[self.pos];
         self.pos += 1;
+        if c == '\n' {
+            self.line += 1;
+        }
         c
     }
 
-    fn next_token(&mut self) -> Tok {
+    fn next_token(&mut self) -> (Token, usize) {
         //skip whitespace
         while self.peek().map_or(false, |c| c.is_whitespace()) {
             self.advance();
         }
 
+        let line = self.line;
+
         match self.peek() {
-            None => Tok::EOF,
+            None => (Token::EOF, line),
             Some(c) => match c {
                 '+' => {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Tok::PlusAssign
+                        (Token::PlusAssign, line)
                     } else {
-                        Tok::Plus
+                        (Token::Plus, line)
                     }
                 }
                 '-' => {
                     self.advance();
                     if self.peek() == Some('>') {
                         self.advance();
-                        Tok::Arrow
+                        (Token::Arrow, line)
                     } else if self.peek() == Some('=') {
                         self.advance();
-                        Tok::MinusAssign
+                        (Token::MinusAssign, line)
                     } else {
-                        Tok::Minus
+                        (Token::Minus, line)
                     }
                 }
                 '*' => {
                     self.advance();
-                    Tok::Star
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        (Token::StarAssign, line)
+                    } else {
+                        (Token::Star, line)
+                    }
                 }
                 '/' => {
                     self.advance();
@@ -80,70 +92,84 @@ impl Lexer {
                         while self.peek().map_or(false, |ch| ch != '\n') {
                             self.advance();
                         }
-                        self.next_token()
+                        return self.next_token();
+                    } else if self.peek() == Some('*') {
+                        self.advance(); // consume '*'
+                        while let Some(ch) = self.peek() {
+                            if ch == '*' && self.peek_next() == Some('/') {
+                                self.advance(); // '*'
+                                self.advance(); // '/'
+                                break;
+                            }
+                            self.advance();
+                        }
+                        return self.next_token();
+                    } else if self.peek() == Some('=') {
+                        self.advance();
+                        (Token::SlashAssign, line)
                     } else {
-                        Tok::Slash
+                        (Token::Slash, line)
                     }
                 }
                 '%' => {
                     self.advance();
-                    Tok::Percent
+                    (Token::Percent, line)
                 }
                 '=' => {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Tok::Eq
+                        (Token::Eq, line)
                     } else if self.peek() == Some('>') {
                         self.advance();
-                        Tok::FatArrow
+                        (Token::FatArrow, line)
                     } else {
-                        Tok::Assign
+                        (Token::Assign, line)
                     }
                 }
                 '!' => {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Tok::NotEq
+                        (Token::NotEq, line)
                     } else {
-                        Tok::Bang
+                        (Token::Bang, line)
                     }
                 }
                 '<' => {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Tok::LtEq
+                        (Token::LtEq, line)
                     } else {
-                        Tok::Lt
+                        (Token::Lt, line)
                     }
                 }
                 '>' => {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Tok::GtEq
+                        (Token::GtEq, line)
                     } else {
-                        Tok::Gt
+                        (Token::Gt, line)
                     }
                 }
                 '&' => {
                     self.advance();
                     if self.peek() == Some('&') {
                         self.advance();
-                        Tok::And
+                        (Token::And, line)
                     } else {
-                        self.next_token()
+                        return self.next_token();
                     }
                 }
                 '|' => {
                     self.advance();
                     if self.peek() == Some('|') {
                         self.advance();
-                        Tok::Or
+                        (Token::Or, line)
                     } else {
-                        self.next_token()
+                        return self.next_token();
                     }
                 }
                 '.' => {
@@ -152,57 +178,57 @@ impl Lexer {
                         self.advance();
                         if self.peek() == Some('=') {
                             self.advance();
-                            Tok::DotDotEq
+                            (Token::DotDotEq, line)
                         } else {
-                            Tok::DotDot
+                            (Token::DotDot, line)
                         }
                     } else {
-                        Tok::Dot
+                        (Token::Dot, line)
                     }
                 }
                 ',' => {
                     self.advance();
-                    Tok::Comma
+                    (Token::Comma, line)
                 }
                 ':' => {
                     self.advance();
-                    Tok::Colon
+                    (Token::Colon, line)
                 }
                 ';' => {
                     self.advance();
-                    Tok::Semicolon
+                    (Token::Semicolon, line)
                 }
                 '(' => {
                     self.advance();
-                    Tok::LParen
+                    (Token::LParen, line)
                 }
                 ')' => {
                     self.advance();
-                    Tok::RParen
+                    (Token::RParen, line)
                 }
                 '{' => {
                     self.advance();
-                    Tok::LBrace
+                    (Token::LBrace, line)
                 }
                 '}' => {
                     self.advance();
-                    Tok::RBrace
+                    (Token::RBrace, line)
                 }
                 '[' => {
                     self.advance();
-                    Tok::LBracket
+                    (Token::LBracket, line)
                 }
                 ']' => {
                     self.advance();
-                    Tok::RBracket
+                    (Token::RBracket, line)
                 }
                 '?' => {
                     self.advance();
-                    Tok::Question
+                    (Token::Question, line)
                 }
-                '0'..='9' => self.lex_number(),
-                '"' => self.lex_string(),
-                'a'..='z' | 'A'..='Z' | '_' => self.lex_indent(),
+                '0'..='9' => (self.lex_number(), line),
+                '"' => (self.lex_string(), line),
+                'a'..='z' | 'A'..='Z' | '_' => (self.lex_indent(), line),
                 _ => {
                     // add error handling here later
                     self.advance();
@@ -212,7 +238,7 @@ impl Lexer {
         }
     }
 
-    fn lex_indent(&mut self) -> Tok {
+    fn lex_indent(&mut self) -> Token {
         let mut s = String::new();
         while self
             .peek()
@@ -221,27 +247,31 @@ impl Lexer {
             s.push(self.advance());
         }
         match s.as_str() {
-            "let" => Tok::Let,
-            "mut" => Tok::Mut,
-            "fn" => Tok::Fn,
-            "return" => Tok::Return,
-            "if" => Tok::If,
-            "else" => Tok::Else,
-            "while" => Tok::While,
-            "for" => Tok::For,
-            "in" => Tok::In,
-            "match" => Tok::Match,
-            "struct" => Tok::Struct,
-            "impl" => Tok::Impl,
-            "as" => Tok::As,
-            "true" => Tok::Bool(true),
-            "false" => Tok::Bool(false),
-            "none" => Tok::None_,
-            _ => Tok::Ident(s),
+            "_" => Token::Underscore,
+            "let" => Token::Let,
+            "mut" => Token::Mut,
+            "fn" => Token::Fn,
+            "return" => Token::Return,
+            "if" => Token::If,
+            "else" => Token::Else,
+            "while" => Token::While,
+            "for" => Token::For,
+            "in" => Token::In,
+            "break" => Token::Break,
+            "continue" => Token::Continue,
+            "match" => Token::Match,
+            "struct" => Token::Struct,
+            "impl" => Token::Impl,
+            "self" => Token::Self_,
+            "as" => Token::As,
+            "true" => Token::Bool(true),
+            "false" => Token::Bool(false),
+            "none" => Token::None_,
+            _ => Token::Ident(s),
         }
     }
 
-    fn lex_number(&mut self) -> Tok {
+    fn lex_number(&mut self) -> Token {
         let mut num = String::new();
 
         while self.peek().map_or(false, |c| c.is_ascii_digit()) {
@@ -258,14 +288,14 @@ impl Lexer {
                 }
             }
             if is_float {
-                return Tok::Float(num.parse::<f64>().unwrap_or(0.0));
+                return Token::Float(num.parse::<f64>().unwrap_or(0.0));
             }
         }
 
-        Tok::Int(num.parse::<i64>().unwrap_or(0))
+        Token::Int(num.parse::<i64>().unwrap_or(0))
     }
 
-    fn lex_string(&mut self) -> Tok {
+    fn lex_string(&mut self) -> Token {
         let mut s = String::new();
         self.advance(); // opening quote
         while let Some(c) = self.peek() {
@@ -306,6 +336,6 @@ impl Lexer {
                 s.push(self.advance());
             }
         }
-        Tok::Str(s)
+        Token::StringLit(s)
     }
 }

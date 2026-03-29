@@ -6,6 +6,7 @@ fn lexes_example_pbl() {
     let src = std::fs::read_to_string("example.pbl").expect("read example.pbl");
     let mut lexer = Lexer::new(&src);
     let tokens = lexer.tokenize();
+    let tokens: Vec<Tok> = tokens.into_iter().map(|(tok, _)| tok).collect();
 
     let expected = vec![
         Tok::Struct,
@@ -101,7 +102,7 @@ fn lexes_example_pbl() {
         Tok::Dot,
         Tok::Ident("buzz".into()),
         Tok::RParen,
-        Tok::Ident("_".into()),
+        Tok::Underscore,
         Tok::FatArrow,
         Tok::Ident("print".into()),
         Tok::LParen,
@@ -129,11 +130,11 @@ fn lexes_example_pbl() {
         Tok::Comma,
         Tok::Ident("fizz".into()),
         Tok::Colon,
-        Tok::Str("Fizz".into()),
+        Tok::StringLit("Fizz".into()),
         Tok::Comma,
         Tok::Ident("buzz".into()),
         Tok::Colon,
-        Tok::Str("Buzz".into()),
+        Tok::StringLit("Buzz".into()),
         Tok::RBrace,
         Tok::Ident("fizzbuzz".into()),
         Tok::LParen,
