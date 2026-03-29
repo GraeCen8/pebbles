@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use inkwell::builder::Builder;
+use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::targets::{InitializationConfig, Target, TargetMachine};
@@ -41,6 +42,8 @@ pub struct Codegen<'ctx> {
     struct_info: HashMap<String, StructInfo>,
     current_fn: Option<FunctionValue<'ctx>>,
     current_ret: Option<Type>,
+    break_stack: Vec<BasicBlock<'ctx>>,
+    continue_stack: Vec<BasicBlock<'ctx>>,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -59,6 +62,8 @@ impl<'ctx> Codegen<'ctx> {
             struct_info: HashMap::new(),
             current_fn: None,
             current_ret: None,
+            break_stack: vec![],
+            continue_stack: vec![],
         }
     }
 
@@ -366,11 +371,24 @@ impl<'ctx> Codegen<'ctx> {
                 let _ = self.codegen_expr(expr, None)?;
                 Ok(())
             }
-            Stmt::If { .. }
-            | Stmt::While { .. }
-            | Stmt::For { .. }
-            | Stmt::Break { .. }
-            | Stmt::Continue { .. } => Err("control flow not codegenned yet".into()),
+            Stmt::While { cond, body, .. } => self.codegen_while(cond, body),
+            Stmt::For { var, iter, body, .. } => self.codegen_for(var, iter, body),
+            Stmt::Break { .. } => {
+                let target = *self
+                    .break_stack
+                    .last()
+                    .ok_or_else(|| "break outside loop".to_string())?;
+                self.builder.build_unconditional_branch(target);
+                Ok(())
+            }
+            Stmt::Continue { .. } => {
+                let target = *self
+                    .continue_stack
+                    .last()
+                    .ok_or_else(|| "continue outside loop".to_string())?;
+                self.builder.build_unconditional_branch(target);
+                Ok(())
+            }
         }
     }
 
@@ -649,10 +667,208 @@ impl<'ctx> Codegen<'ctx> {
                     ty: ty.clone(),
                 })
             }
-            Expr::If { .. } | Expr::Match { .. } | Expr::Array(_, _) | Expr::Index { .. } => {
+            Expr::If { cond, then, else_, .. } => self.codegen_if_expr(cond, then, else_, expected),
+            Expr::Match { .. } | Expr::Array(_, _) | Expr::Index { .. } => {
                 Err("expression not codegenned yet".into())
             }
         }
+    }
+
+    fn codegen_if_expr(
+        &mut self,
+        cond: &Expr,
+        then: &[Stmt],
+        else_: &Option<Vec<Stmt>>,
+        expected: Option<&Type>,
+    ) -> Result<CgValue<'ctx>, String> {
+        let cond_val = self.codegen_expr(cond, Some(&Type::Bool))?;
+        let cond_v = cond_val
+            .value
+            .ok_or_else(|| "if condition expects value".to_string())?
+            .into_int_value();
+
+        let func = self
+            .current_fn
+            .ok_or_else(|| "if outside function".to_string())?;
+        let then_bb = self.context.append_basic_block(func, "then");
+        let else_bb = self.context.append_basic_block(func, "else");
+        let merge_bb = self.context.append_basic_block(func, "ifend");
+
+        self.builder
+            .build_conditional_branch(cond_v, then_bb, else_bb);
+
+        self.builder.position_at_end(then_bb);
+        let then_val = self.codegen_block(then, expected)?;
+        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            self.builder.build_unconditional_branch(merge_bb);
+        }
+        let then_end = self.builder.get_insert_block().unwrap();
+
+        self.builder.position_at_end(else_bb);
+        let else_val = match else_ {
+            Some(stmts) => self.codegen_block(stmts, expected)?,
+            None => None,
+        };
+        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            self.builder.build_unconditional_branch(merge_bb);
+        }
+        let else_end = self.builder.get_insert_block().unwrap();
+
+        self.builder.position_at_end(merge_bb);
+
+        let ty = expected.cloned().unwrap_or(Type::Void);
+        if ty == Type::Void {
+            return Ok(CgValue { value: None, ty });
+        }
+        let llvm_ty = self.llvm_type(&ty);
+        let phi = self.builder.build_phi(llvm_ty, "iftmp");
+        if let Some(v) = then_val {
+            phi.add_incoming(&[(&v, then_end)]);
+        }
+        if let Some(v) = else_val {
+            phi.add_incoming(&[(&v, else_end)]);
+        }
+        Ok(CgValue {
+            value: Some(phi.as_basic_value()),
+            ty,
+        })
+    }
+
+    fn codegen_block(
+        &mut self,
+        stmts: &[Stmt],
+        expected: Option<&Type>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        self.push_scope();
+        let mut result = None;
+        for (idx, stmt) in stmts.iter().enumerate() {
+            let last = idx + 1 == stmts.len();
+            if last {
+                if let Stmt::Expr(expr) = stmt {
+                    if expected.is_some() && expected != Some(&Type::Void) {
+                        let v = self.codegen_expr(expr, expected)?;
+                        result = v.value;
+                        continue;
+                    }
+                }
+            }
+            self.codegen_stmt(stmt)?;
+        }
+        self.pop_scope();
+        Ok(result)
+    }
+
+    fn codegen_while(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), String> {
+        let func = self
+            .current_fn
+            .ok_or_else(|| "while outside function".to_string())?;
+        let cond_bb = self.context.append_basic_block(func, "while.cond");
+        let body_bb = self.context.append_basic_block(func, "while.body");
+        let end_bb = self.context.append_basic_block(func, "while.end");
+
+        self.builder.build_unconditional_branch(cond_bb);
+        self.builder.position_at_end(cond_bb);
+        let cond_val = self.codegen_expr(cond, Some(&Type::Bool))?;
+        let cond_v = cond_val
+            .value
+            .ok_or_else(|| "while condition expects value".to_string())?
+            .into_int_value();
+        self.builder
+            .build_conditional_branch(cond_v, body_bb, end_bb);
+
+        self.builder.position_at_end(body_bb);
+        self.break_stack.push(end_bb);
+        self.continue_stack.push(cond_bb);
+        self.codegen_block(body, None)?;
+        self.break_stack.pop();
+        self.continue_stack.pop();
+        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            self.builder.build_unconditional_branch(cond_bb);
+        }
+
+        self.builder.position_at_end(end_bb);
+        Ok(())
+    }
+
+    fn codegen_for(&mut self, var: &str, iter: &Expr, body: &[Stmt]) -> Result<(), String> {
+        let iter_ty = self.infer_expr_type(iter)?;
+        if iter_ty != Type::Range {
+            return Err("for loop only supports range for now".into());
+        }
+        let func = self
+            .current_fn
+            .ok_or_else(|| "for outside function".to_string())?;
+
+        let range_val = self.codegen_expr(iter, Some(&Type::Range))?;
+        let range = range_val
+            .value
+            .ok_or_else(|| "for range expects value".to_string())?;
+        let start = self
+            .builder
+            .build_extract_value(range.into_struct_value(), 0, "start")
+            .unwrap()
+            .into_int_value();
+        let end = self
+            .builder
+            .build_extract_value(range.into_struct_value(), 1, "end")
+            .unwrap()
+            .into_int_value();
+        let inclusive = self
+            .builder
+            .build_extract_value(range.into_struct_value(), 2, "incl")
+            .unwrap()
+            .into_int_value();
+
+        let idx_alloca = self.create_entry_alloca(var, &Type::I32)?;
+        self.builder.build_store(idx_alloca, start);
+        self.push_scope();
+        self.bind_var(var, Type::I32, idx_alloca);
+
+        let cond_bb = self.context.append_basic_block(func, "for.cond");
+        let body_bb = self.context.append_basic_block(func, "for.body");
+        let incr_bb = self.context.append_basic_block(func, "for.incr");
+        let end_bb = self.context.append_basic_block(func, "for.end");
+
+        self.builder.build_unconditional_branch(cond_bb);
+        self.builder.position_at_end(cond_bb);
+        let cur = self.builder.build_load(idx_alloca, "i").into_int_value();
+        let cmp = self.builder.build_select(
+            inclusive,
+            self.builder
+                .build_int_compare(inkwell::IntPredicate::SLE, cur, end, "cmple")
+                .into(),
+            self.builder
+                .build_int_compare(inkwell::IntPredicate::SLT, cur, end, "cmplt")
+                .into(),
+            "cmp",
+        );
+        let cmp_i1 = cmp.into_int_value();
+        self.builder
+            .build_conditional_branch(cmp_i1, body_bb, end_bb);
+
+        self.builder.position_at_end(body_bb);
+        self.break_stack.push(end_bb);
+        self.continue_stack.push(incr_bb);
+        self.codegen_block(body, None)?;
+        self.break_stack.pop();
+        self.continue_stack.pop();
+        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            self.builder.build_unconditional_branch(incr_bb);
+        }
+
+        self.builder.position_at_end(incr_bb);
+        let cur = self.builder.build_load(idx_alloca, "i").into_int_value();
+        let next = self.builder.build_int_add(
+            cur,
+            self.context.i32_type().const_int(1, false),
+            "i.next",
+        );
+        self.builder.build_store(idx_alloca, next);
+        self.builder.build_unconditional_branch(cond_bb);
+
+        self.builder.position_at_end(end_bb);
+        self.pop_scope();
+        Ok(())
     }
 
     fn codegen_binop(
