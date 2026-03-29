@@ -1142,7 +1142,18 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
-                if *ty == Type::F64 {
+                if *ty == Type::Str && (op == BinOp::Eq || op == BinOp::NotEq) {
+                    let f = self
+                        .module
+                        .get_function("pebbles_str_eq")
+                        .ok_or_else(|| "missing pebbles_str_eq".to_string())?;
+                    let call = self.builder.build_call(f, &[l, r], "streq");
+                    let mut v = call.try_as_basic_value().left().unwrap().into_int_value();
+                    if op == BinOp::NotEq {
+                        v = self.builder.build_not(v, "not");
+                    }
+                    Ok(v.into())
+                } else if *ty == Type::F64 {
                     let lv = l.into_float_value();
                     let rv = r.into_float_value();
                     let pred = match op {
