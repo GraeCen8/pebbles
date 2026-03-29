@@ -53,10 +53,22 @@ char *pebbles_str_concat(const char *a, const char *b) {
         return NULL;
     }
     if (a == NULL) {
-        return strdup(b);
+        size_t lb = strlen(b);
+        char *out = (char *)malloc(lb + 1);
+        if (!out) {
+            return NULL;
+        }
+        memcpy(out, b, lb + 1);
+        return out;
     }
     if (b == NULL) {
-        return strdup(a);
+        size_t la = strlen(a);
+        char *out = (char *)malloc(la + 1);
+        if (!out) {
+            return NULL;
+        }
+        memcpy(out, a, la + 1);
+        return out;
     }
     size_t la = strlen(a);
     size_t lb = strlen(b);
