@@ -984,6 +984,11 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             self.codegen_stmt(stmt)?;
+            if let Some(block) = self.builder.get_insert_block() {
+                if block.get_terminator().is_some() {
+                    break;
+                }
+            }
         }
         self.pop_scope();
         Ok(result)
