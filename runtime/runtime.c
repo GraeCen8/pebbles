@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 
 void pebbles_print_str(const char *s) {
     if (s == NULL) {
@@ -14,17 +13,21 @@ void pebbles_print_str(const char *s) {
 }
 
 char *pebbles_input(void) {
-    char *line = NULL;
-    size_t cap = 0;
-    ssize_t n = getline(&line, &cap, stdin);
-    if (n <= 0) {
-        free(line);
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), stdin)) {
         return NULL;
     }
-    if (line[n - 1] == '\n') {
-        line[n - 1] = '\0';
+    size_t n = strlen(buf);
+    if (n > 0 && buf[n - 1] == '\n') {
+        buf[n - 1] = '\0';
+        n -= 1;
     }
-    return line;
+    char *out = (char *)malloc(n + 1);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, buf, n + 1);
+    return out;
 }
 
 int32_t pebbles_len_str(const char *s) {

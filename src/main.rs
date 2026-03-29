@@ -101,6 +101,7 @@ fn link_executable(obj: &Path, rt_obj: &Path, out: &Path) -> Result<(), String> 
         .args([
             obj.to_str().ok_or("bad obj path")?,
             rt_obj.to_str().ok_or("bad rt obj path")?,
+            "-no-pie",
             "-o",
             out.to_str().ok_or("bad out path")?,
         ])
