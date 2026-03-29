@@ -230,13 +230,6 @@ impl<'ctx> Codegen<'ctx> {
                 ret: Type::I32,
             },
         );
-        self.sigs.insert(
-            "str".into(),
-            FnSig {
-                params: vec![Type::I32],
-                ret: Type::Str,
-            },
-        );
     }
 
     fn declare_runtime(&mut self) -> Result<(), String> {
@@ -410,8 +403,14 @@ impl<'ctx> Codegen<'ctx> {
                 let opt_ty = expected
                     .cloned()
                     .ok_or_else(|| "none requires optional type".to_string())?;
-                let llvm_ty = self.llvm_type(&opt_ty);
-                let val = llvm_ty.into_struct_type().get_undef();
+                let llvm_ty = self.llvm_type(&opt_ty).into_struct_type();
+                let mut val = llvm_ty.get_undef();
+                let zero = self.context.bool_type().const_int(0, false);
+                val = self
+                    .builder
+                    .build_insert_value(val, zero, 0, "none")
+                    .unwrap()
+                    .into_struct_value();
                 Ok(CgValue {
                     value: Some(val.into()),
                     ty: opt_ty,
@@ -531,6 +530,57 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(CgValue { value: Some(res), ty: ot })
             }
             Expr::Call { name, args, .. } => {
+                if name == "print" {
+                    let arg = args.first().ok_or_else(|| "print expects 1 arg".to_string())?;
+                    let v = self.codegen_expr(arg, Some(&Type::Str))?;
+                    let val = v.value.ok_or_else(|| "print expects value".to_string())?;
+                    let f = self
+                        .module
+                        .get_function("pebbles_print_str")
+                        .ok_or_else(|| "missing pebbles_print_str".to_string())?;
+                    self.builder.build_call(f, &[val], "print");
+                    return Ok(CgValue { value: None, ty: Type::Void });
+                }
+                if name == "input" {
+                    let f = self
+                        .module
+                        .get_function("pebbles_input")
+                        .ok_or_else(|| "missing pebbles_input".to_string())?;
+                    let call = self.builder.build_call(f, &[], "input");
+                    let v = call.try_as_basic_value().left().unwrap();
+                    return Ok(CgValue { value: Some(v), ty: Type::Str });
+                }
+                if name == "len" {
+                    let arg = args.first().ok_or_else(|| "len expects 1 arg".to_string())?;
+                    let v = self.codegen_expr(arg, Some(&Type::Str))?;
+                    let val = v.value.ok_or_else(|| "len expects value".to_string())?;
+                    let f = self
+                        .module
+                        .get_function("pebbles_len_str")
+                        .ok_or_else(|| "missing pebbles_len_str".to_string())?;
+                    let call = self.builder.build_call(f, &[val], "len");
+                    let v = call.try_as_basic_value().left().unwrap();
+                    return Ok(CgValue { value: Some(v), ty: Type::I32 });
+                }
+                if name == "str" {
+                    let arg = args.first().ok_or_else(|| "str expects 1 arg".to_string())?;
+                    let arg_ty = self.infer_expr_type(arg)?;
+                    let v = self.codegen_expr(arg, Some(&arg_ty))?;
+                    let val = v.value.ok_or_else(|| "str expects value".to_string())?;
+                    if arg_ty == Type::Str {
+                        return Ok(CgValue { value: Some(val), ty: Type::Str });
+                    }
+                    if arg_ty == Type::I32 {
+                        let f = self
+                            .module
+                            .get_function("pebbles_str_i32")
+                            .ok_or_else(|| "missing pebbles_str_i32".to_string())?;
+                        let call = self.builder.build_call(f, &[val], "str");
+                        let v = call.try_as_basic_value().left().unwrap();
+                        return Ok(CgValue { value: Some(v), ty: Type::Str });
+                    }
+                    return Err("str() only supports i32 and str for now".into());
+                }
                 let sig = self
                     .sigs
                     .get(name)
@@ -888,6 +938,13 @@ impl<'ctx> Codegen<'ctx> {
                 .sigs
                 .get(name)
                 .map(|s| s.ret.clone())
+                .or_else(|| {
+                    if name == "str" {
+                        Some(Type::Str)
+                    } else {
+                        None
+                    }
+                })
                 .ok_or_else(|| format!("unknown function '{name}'")),
             Expr::MethodCall { obj, method, .. } => {
                 let obj_ty = self.infer_expr_type(obj)?;
