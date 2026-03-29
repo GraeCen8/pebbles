@@ -6,10 +6,28 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::targets::{InitializationConfig, Target, TargetMachine};
 use inkwell::types::{BasicTypeEnum, StructType};
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use crate::ast::*;
+
+#[derive(Debug, Clone)]
+struct FnSig {
+    params: Vec<Type>,
+    ret: Type,
+}
+
+#[derive(Debug, Clone)]
+struct StructInfo {
+    fields: Vec<(String, Type)>,
+    methods: HashMap<String, FnSig>,
+}
+
+#[derive(Clone)]
+struct CgValue<'ctx> {
+    value: Option<BasicValueEnum<'ctx>>,
+    ty: Type,
+}
 
 pub struct Codegen<'ctx> {
     context: &'ctx Context,
@@ -18,6 +36,11 @@ pub struct Codegen<'ctx> {
     structs: HashMap<String, StructType<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     var_scopes: Vec<HashMap<String, PointerValue<'ctx>>>,
+    type_scopes: Vec<HashMap<String, Type>>,
+    sigs: HashMap<String, FnSig>,
+    struct_info: HashMap<String, StructInfo>,
+    current_fn: Option<FunctionValue<'ctx>>,
+    current_ret: Option<Type>,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -31,6 +54,11 @@ impl<'ctx> Codegen<'ctx> {
             structs: HashMap::new(),
             functions: HashMap::new(),
             var_scopes: vec![],
+            type_scopes: vec![],
+            sigs: HashMap::new(),
+            struct_info: HashMap::new(),
+            current_fn: None,
+            current_ret: None,
         }
     }
 
@@ -63,6 +91,45 @@ impl<'ctx> Codegen<'ctx> {
             .map_err(|e| format!("write object failed: {e}"))
     }
 
+    pub fn collect_signatures(&mut self, items: &[Item]) -> Result<(), String> {
+        self.init_builtins();
+        for item in items {
+            match item {
+                Item::Fn(f) => {
+                    if self.sigs.contains_key(&f.name) {
+                        return Err(format!("function '{}' already defined", f.name));
+                    }
+                    self.sigs.insert(
+                        f.name.clone(),
+                        FnSig {
+                            params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                            ret: f.ret.clone(),
+                        },
+                    );
+                }
+                Item::Struct(_) => {}
+                Item::Impl(imp) => {
+                    let info = self
+                        .struct_info
+                        .get_mut(&imp.type_name)
+                        .ok_or_else(|| format!("impl for unknown struct '{}'", imp.type_name))?;
+                    for method in &imp.methods {
+                        let sig = FnSig {
+                            params: method.params.iter().map(|p| p.ty.clone()).collect(),
+                            ret: method.ret.clone(),
+                        };
+                        info.methods.insert(method.name.clone(), sig.clone());
+                        self.sigs.insert(
+                            format!("{}__{}", imp.type_name, method.name),
+                            sig,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn collect_structs(&mut self, items: &[Item]) -> Result<(), String> {
         for item in items {
             if let Item::Struct(def) = item {
@@ -71,6 +138,17 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 let st = self.context.opaque_struct_type(&def.name);
                 self.structs.insert(def.name.clone(), st);
+                self.struct_info.insert(
+                    def.name.clone(),
+                    StructInfo {
+                        fields: def
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect(),
+                        methods: HashMap::new(),
+                    },
+                );
             }
         }
         for item in items {
@@ -95,12 +173,12 @@ impl<'ctx> Codegen<'ctx> {
         for item in items {
             match item {
                 Item::Fn(f) => {
-                    self.declare_function(&f.name, &f.params, &f.ret)?;
+                    self.declare_function(&f.name, &f.params, &f.ret, None)?;
                 }
                 Item::Impl(imp) => {
                     for method in &imp.methods {
                         let name = format!("{}__{}", imp.type_name, method.name);
-                        self.declare_function(&name, &method.params, &method.ret)?;
+                        self.declare_function(&name, &method.params, &method.ret, Some(&imp.type_name))?;
                     }
                 }
                 Item::Struct(_) => {}
@@ -114,22 +192,51 @@ impl<'ctx> Codegen<'ctx> {
         name: &str,
         params: &[Param],
         ret: &Type,
+        self_type: Option<&str>,
     ) -> Result<(), String> {
         let mut param_types: Vec<BasicTypeEnum<'ctx>> = vec![];
         for p in params {
-            let ty = match p.name.as_str() {
-                "self" => self.llvm_type(&Type::Named("self".into())),
-                _ => self.llvm_type(&p.ty),
-            };
+            let ty = self.llvm_type_with_self(&p.ty, self_type);
             param_types.push(ty);
         }
         let fn_type = match ret {
             Type::Void => self.context.void_type().fn_type(&param_types, false),
-            _ => self.llvm_type(ret).fn_type(&param_types, false),
+            _ => self.llvm_type_with_self(ret, self_type).fn_type(&param_types, false),
         };
         let f = self.module.add_function(name, fn_type, None);
         self.functions.insert(name.to_string(), f);
         Ok(())
+    }
+
+    fn init_builtins(&mut self) {
+        self.sigs.insert(
+            "print".into(),
+            FnSig {
+                params: vec![Type::Str],
+                ret: Type::Void,
+            },
+        );
+        self.sigs.insert(
+            "input".into(),
+            FnSig {
+                params: vec![],
+                ret: Type::Str,
+            },
+        );
+        self.sigs.insert(
+            "len".into(),
+            FnSig {
+                params: vec![Type::Str],
+                ret: Type::I32,
+            },
+        );
+        self.sigs.insert(
+            "str".into(),
+            FnSig {
+                params: vec![Type::I32],
+                ret: Type::Str,
+            },
+        );
     }
 
     fn declare_runtime(&mut self) -> Result<(), String> {
@@ -156,6 +263,10 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn llvm_type(&self, ty: &Type) -> BasicTypeEnum<'ctx> {
+        self.llvm_type_with_self(ty, None)
+    }
+
+    fn llvm_type_with_self(&self, ty: &Type, self_type: Option<&str>) -> BasicTypeEnum<'ctx> {
         match ty {
             Type::I32 => self.context.i32_type().into(),
             Type::I64 => self.context.i64_type().into(),
@@ -195,12 +306,14 @@ impl<'ctx> Codegen<'ctx> {
                 .copied()
                 .unwrap_or_else(|| self.context.opaque_struct_type(name))
                 .into(),
-            Type::SelfType => self
-                .structs
-                .get("self")
-                .copied()
-                .unwrap_or_else(|| self.context.opaque_struct_type("self"))
-                .into(),
+            Type::SelfType => {
+                let name = self_type.unwrap_or("self");
+                self.structs
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| self.context.opaque_struct_type(name))
+                    .into()
+            }
             Type::Void => self.context.i8_type().into(),
         }
     }
