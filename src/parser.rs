@@ -580,7 +580,29 @@ impl Parser {
             // Literals
             Token::Int(n) => {
                 self.advance();
-                Ok(Expr::Int(n, line))
+                match self.peek().clone() {
+                    Token::DotDot => {
+                        self.advance();
+                        let end = self.parse_expr()?;
+                        Ok(Expr::Range {
+                            start: Box::new(Expr::Int(n, line)),
+                            end: Box::new(end),
+                            inclusive: false,
+                            line,
+                        })
+                    }
+                    Token::DotDotEq => {
+                        self.advance();
+                        let end = self.parse_expr()?;
+                        Ok(Expr::Range {
+                            start: Box::new(Expr::Int(n, line)),
+                            end: Box::new(end),
+                            inclusive: true,
+                            line,
+                        })
+                    }
+                    _ => Ok(Expr::Int(n, line)),
+                }
             }
             Token::Float(f) => {
                 self.advance();
@@ -692,34 +714,6 @@ impl Parser {
                     }
 
                     _ => Ok(Expr::Ident(name, line)),
-                }
-            }
-
-            // Integer range literal: 0..10 or 0..=10
-            Token::Int(n) => {
-                self.advance();
-                match self.peek().clone() {
-                    Token::DotDot => {
-                        self.advance();
-                        let end = self.parse_expr()?;
-                        Ok(Expr::Range {
-                            start: Box::new(Expr::Int(n, line)),
-                            end: Box::new(end),
-                            inclusive: false,
-                            line,
-                        })
-                    }
-                    Token::DotDotEq => {
-                        self.advance();
-                        let end = self.parse_expr()?;
-                        Ok(Expr::Range {
-                            start: Box::new(Expr::Int(n, line)),
-                            end: Box::new(end),
-                            inclusive: true,
-                            line,
-                        })
-                    }
-                    _ => Ok(Expr::Int(n, line)),
                 }
             }
 
