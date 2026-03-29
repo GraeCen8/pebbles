@@ -7,13 +7,11 @@ fn main() {
     let mut parser = pebbles::parser::Parser::new(tokens);
     let ast = parser.parse().expect("parse example.pbl");
 
-    let mut checker = pebbles::typeck::TypeChecker;
+    let mut checker = pebbles::typeck::TypeChecker::new();
     checker.check(&ast).unwrap_or_else(|e| {
-        eprintln!("error {}" e)
+        eprintln!("error {}", e);
         std::process::exit(1);
-    })
+    });
 
-    //error checking 
-
-    //codegen 
+    // codegen
 }
