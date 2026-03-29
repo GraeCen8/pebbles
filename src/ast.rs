@@ -57,7 +57,7 @@ pub enum Token {
     Comma,
     Colon,
     Semicolon,
-    Question, // ?
+    Question,   // ?
     Underscore, // _
     LParen,
     RParen,
@@ -83,6 +83,8 @@ pub enum Type {
     Str,
     Void,
     SelfType,
+    Range,
+    Tuple(Vec<Type>),
     Array(Box<Type>),
     Optional(Box<Type>),
     Named(String), // user-defined struct name
@@ -169,8 +171,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
         line: usize,
     },
-    Break    { line: usize },
-    Continue { line: usize },
+    Break {
+        line: usize,
+    },
+    Continue {
+        line: usize,
+    },
     /// A bare expression used as a statement (function calls, if-else, etc.)
     Expr(Expr),
 }
@@ -179,8 +185,16 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub enum AssignTarget {
     Ident(String, usize),
-    Field { obj: Box<Expr>, field: String, line: usize },
-    Index { obj: Box<Expr>, index: Box<Expr>, line: usize },
+    Field {
+        obj: Box<Expr>,
+        field: String,
+        line: usize,
+    },
+    Index {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+        line: usize,
+    },
 }
 
 // ─── Expressions ─────────────────────────────────────────────────────────────
@@ -208,39 +222,92 @@ pub enum Expr {
 
     // Names and access
     Ident(String, usize),
-    FieldAccess { obj: Box<Expr>, field: String, line: usize },
-    Index       { obj: Box<Expr>, index: Box<Expr>, line: usize },
+    FieldAccess {
+        obj: Box<Expr>,
+        field: String,
+        line: usize,
+    },
+    Index {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+        line: usize,
+    },
 
     // Calls
-    Call       { name: String, args: Vec<Expr>, line: usize },
-    MethodCall { obj: Box<Expr>, method: String, args: Vec<Expr>, line: usize },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+        line: usize,
+    },
+    MethodCall {
+        obj: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+        line: usize,
+    },
 
     // Struct literal:  Name { field: val, ... }
-    StructLit  { name: String, fields: Vec<(String, Expr)>, line: usize },
+    StructLit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+        line: usize,
+    },
 
     // Operators
-    BinOp  { op: BinOp,   left: Box<Expr>, right: Box<Expr>, line: usize },
-    UnaryOp { op: UnaryOp, operand: Box<Expr>, line: usize },
+    BinOp {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        line: usize,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        operand: Box<Expr>,
+        line: usize,
+    },
 
     // Type cast:  expr as Type
-    Cast { expr: Box<Expr>, ty: Type, line: usize },
+    Cast {
+        expr: Box<Expr>,
+        ty: Type,
+        line: usize,
+    },
 
     // Control flow as expressions
-    If    { cond: Box<Expr>, then: Vec<Stmt>, else_: Option<Vec<Stmt>>, line: usize },
-    Match { subject: Box<Expr>, arms: Vec<MatchArm>, line: usize },
+    If {
+        cond: Box<Expr>,
+        then: Vec<Stmt>,
+        else_: Option<Vec<Stmt>>,
+        line: usize,
+    },
+    Match {
+        subject: Box<Expr>,
+        arms: Vec<MatchArm>,
+        line: usize,
+    },
 }
 
 impl Expr {
     pub fn line(&self) -> usize {
         match self {
-            Expr::Int(_, l) | Expr::Float(_, l) | Expr::Bool(_, l)
-            | Expr::Str(_, l) | Expr::None(l) | Expr::Array(_, l)
-            | Expr::Tuple(_, l) | Expr::Ident(_, l) => *l,
-            Expr::BinOp  { line, .. } | Expr::UnaryOp { line, .. }
-            | Expr::Call { line, .. } | Expr::MethodCall { line, .. }
-            | Expr::FieldAccess { line, .. } | Expr::Index { line, .. }
-            | Expr::StructLit { line, .. } | Expr::Cast { line, .. }
-            | Expr::If { line, .. } | Expr::Match { line, .. }
+            Expr::Int(_, l)
+            | Expr::Float(_, l)
+            | Expr::Bool(_, l)
+            | Expr::Str(_, l)
+            | Expr::None(l)
+            | Expr::Array(_, l)
+            | Expr::Tuple(_, l)
+            | Expr::Ident(_, l) => *l,
+            Expr::BinOp { line, .. }
+            | Expr::UnaryOp { line, .. }
+            | Expr::Call { line, .. }
+            | Expr::MethodCall { line, .. }
+            | Expr::FieldAccess { line, .. }
+            | Expr::Index { line, .. }
+            | Expr::StructLit { line, .. }
+            | Expr::Cast { line, .. }
+            | Expr::If { line, .. }
+            | Expr::Match { line, .. }
             | Expr::Range { line, .. } => *line,
         }
     }
@@ -250,10 +317,19 @@ impl Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Mod,
-    Eq, NotEq,
-    Lt, Gt, LtEq, GtEq,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    And,
+    Or,
 }
 
 // ─── Unary operators ──────────────────────────────────────────────────────────
@@ -274,15 +350,16 @@ pub struct MatchArm {
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
-    Wildcard,               // _
+    Wildcard, // _
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(String),
     None,
-    Binding(String),        // variable name — captures the value
-    Tuple(Vec<Pattern>),    // (pat, pat)
-    Struct {                // Name { field: pat, ... }
+    Binding(String),     // variable name — captures the value
+    Tuple(Vec<Pattern>), // (pat, pat)
+    Struct {
+        // Name { field: pat, ... }
         name: String,
         fields: Vec<(String, Pattern)>,
     },
