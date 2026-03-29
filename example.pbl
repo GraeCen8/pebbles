@@ -1,0 +1,30 @@
+struct Config {
+  limit: i32
+  fizz:  str
+  buzz:  str
+}
+
+fn fizzbuzz(cfg: Config) {
+  for i in 1..=cfg.limit {
+    let f = i % 3 == 0
+    let b = i % 5 == 0
+
+    match (f, b) {
+      (true,  true)  => print(cfg.fizz + cfg.buzz)
+      (true,  false) => print(cfg.fizz)
+      (false, true)  => print(cfg.buzz)
+      _               => print(str(i))
+    }
+  }
+}
+
+fn main() {
+  let cfg = Config {
+    limit: 30,
+    fizz:  "Fizz",
+    buzz:  "Buzz"
+  }
+  fizzbuzz(cfg)
+}
+
+// this should compile by the end. it is used for testing and not a list of syntax examples. 
