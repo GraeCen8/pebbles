@@ -71,6 +71,15 @@ impl<'ctx> Codegen<'ctx> {
         &self.module
     }
 
+    pub fn compile(&mut self, items: &[Item]) -> Result<(), String> {
+        self.collect_structs(items)?;
+        self.collect_signatures(items)?;
+        self.declare_functions(items)?;
+        self.declare_runtime()?;
+        self.define_items(items)?;
+        Ok(())
+    }
+
     pub fn write_ir(module: &Module<'ctx>, path: &Path) -> Result<(), String> {
         module
             .print_to_file(path)
