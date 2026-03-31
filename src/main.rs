@@ -1,37 +1,34 @@
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use clap::Parser;
 use inkwell::context::Context;
 
+#[derive(Parser, Debug)]
+#[command(name = "pebbles", about = "Compile Pebbles source files")]
+struct Args {
+    /// Input .pbl file
+    input: PathBuf,
+    /// Output executable path
+    #[arg(short = 'o', long = "output")]
+    output: Option<PathBuf>,
+    /// Keep intermediate .ll and .o files
+    #[arg(long = "emit-extra-files")]
+    emit_extra_files: bool,
+}
+
 fn main() {
-    let mut args = env::args().skip(1);
-    let input = match args.next() {
-        Some(v) => v,
-        None => {
-            eprintln!("usage: pebbles <input.pbl> [-o out] [--emit-llvm out.ll]");
-            std::process::exit(1);
-        }
-    };
-    let mut output = format!("{}.pbl", input);
-    let mut emit_ir: Option<String> = None;
+    let args = Args::parse();
+    let out_path = args.output.unwrap_or_else(|| args.input.with_extension(""));
 
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-o" => {
-                output = args.next().unwrap_or_else(|| "a.out".to_string());
-            }
-            "--emit-llvm" => {
-                emit_ir = args.next();
-            }
-            _ => {
-                eprintln!("unknown arg {arg}");
-                std::process::exit(1);
-            }
-        }
+    if let Err(e) = build_program(&args.input, &out_path, args.emit_extra_files) {
+        eprintln!("{e}");
+        std::process::exit(1);
     }
+}
 
-    let src = std::fs::read_to_string(&input).expect("read input");
+fn build_program(in_path: &Path, out_path: &Path, emit_extra_files: bool) -> Result<(), String> {
+    let src = std::fs::read_to_string(in_path).map_err(|e| format!("read input error: {e}"))?;
 
     let mut lexer = pebbles::lexer::Lexer::new(&src);
     let tokens = lexer.tokenize();
@@ -52,30 +49,26 @@ fn main() {
         std::process::exit(1);
     });
 
-    let out_path = PathBuf::from(output);
-    let ir_path = emit_ir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| out_path.with_extension("ll"));
+    let ir_path = out_path.with_extension("ll");
     let obj_path = out_path.with_extension("o");
     let rt_obj_path = out_path.with_extension("rt.o");
 
-    pebbles::codegen::Codegen::write_ir(cg.module(), &ir_path).unwrap_or_else(|e| {
-        eprintln!("write ir error: {e}");
-        std::process::exit(1);
-    });
-    pebbles::codegen::Codegen::write_object(cg.module(), &obj_path).unwrap_or_else(|e| {
-        eprintln!("write object error: {e}");
-        std::process::exit(1);
-    });
+    if emit_extra_files {
+        pebbles::codegen::Codegen::write_ir(cg.module(), &ir_path)
+            .map_err(|e| format!("write ir error: {e}"))?;
+    }
+    pebbles::codegen::Codegen::write_object(cg.module(), &obj_path)
+        .map_err(|e| format!("write object error: {e}"))?;
 
-    build_runtime(&rt_obj_path).unwrap_or_else(|e| {
-        eprintln!("runtime build error: {e}");
-        std::process::exit(1);
-    });
-    link_executable(&obj_path, &rt_obj_path, &out_path).unwrap_or_else(|e| {
-        eprintln!("link error: {e}");
-        std::process::exit(1);
-    });
+    build_runtime(&rt_obj_path).map_err(|e| format!("runtime build error: {e}"))?;
+    link_executable(&obj_path, &rt_obj_path, out_path).map_err(|e| format!("link error: {e}"))?;
+
+    if !emit_extra_files {
+        let _ = std::fs::remove_file(&obj_path);
+        let _ = std::fs::remove_file(&rt_obj_path);
+    }
+
+    Ok(())
 }
 
 fn build_runtime(out_obj: &Path) -> Result<(), String> {
