@@ -333,7 +333,17 @@ impl TypeChecker {
  
             AssignTarget::Index { obj, index, line } => {
                 let obj_ty  = self.infer_expr(obj)?;
-                let mutable = self.expr_is_mutable(obj);
+                let mutable = if matches!(obj_ty, Type::Array(_)) {
+                    self.array_obj_mutable(obj)
+                } else {
+                    self.expr_is_mutable(obj)
+                };
+                if matches!(obj_ty, Type::Array(_)) && !mutable {
+                    return Err(TypeError::new(
+                        "cannot assign into an immutable array",
+                        *line,
+                    ));
+                }
                 let elem_ty = match &obj_ty {
                     Type::Array(inner) => *inner.clone(),
                     other => return Err(TypeError::new(
