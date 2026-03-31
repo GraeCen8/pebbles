@@ -353,6 +353,13 @@ impl TypeChecker {
             _ => true, // be permissive for complex lvalues
         }
     }
+
+    fn array_obj_mutable(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident(name, _) => self.scopes.lookup(name).map_or(false, |(_, m)| *m),
+            _ => false,
+        }
+    }
  
     // ─── Expression inference ─────────────────────────────────────────────────
  
@@ -473,7 +480,10 @@ impl TypeChecker {
             Expr::MethodCall { obj, method, args, line } => {
                 let obj_ty = self.infer_expr(obj)?;
                 match &obj_ty {
-                    Type::Array(_) => self.check_array_method(&obj_ty, method, args, *line),
+                    Type::Array(_) => {
+                        let mutable = self.array_obj_mutable(obj);
+                        self.check_array_method(&obj_ty, method, args, *line, mutable)
+                    }
                     Type::Named(struct_name) => {
                         let sig = self.structs
                             .get(struct_name)
@@ -621,7 +631,14 @@ impl TypeChecker {
  
     // ─── Array built-in methods ───────────────────────────────────────────────
  
-    fn check_array_method(&self, arr_ty: &Type, method: &str, args: &[Expr], line: usize) -> TypeResult<Type> {
+    fn check_array_method(
+        &self,
+        arr_ty: &Type,
+        method: &str,
+        args: &[Expr],
+        line: usize,
+        mutable: bool,
+    ) -> TypeResult<Type> {
         let elem_ty = match arr_ty {
             Type::Array(inner) => *inner.clone(),
             _ => unreachable!(),
@@ -629,12 +646,23 @@ impl TypeChecker {
         match method {
             "length" if args.is_empty()  => Ok(Type::I32),
             "push"   if args.len() == 1  => {
+                if !mutable {
+                    return Err(TypeError::new("push() requires a mutable array", line));
+                }
                 let arg_ty = self.infer_expr(&args[0])?;
                 self.assert_assignable(&arg_ty, &elem_ty, line)?;
                 Ok(Type::Void)
             }
-            "pop"      if args.is_empty() => Ok(Type::Optional(Box::new(elem_ty))),
+            "pop"      if args.is_empty() => {
+                if !mutable {
+                    return Err(TypeError::new("pop() requires a mutable array", line));
+                }
+                Ok(Type::Optional(Box::new(elem_ty)))
+            }
             "contains" if args.len() == 1 => {
+                if matches!(elem_ty, Type::Array(_)) {
+                    return Err(TypeError::new("contains() does not support array elements yet", line));
+                }
                 let arg_ty = self.infer_expr(&args[0])?;
                 self.assert_same(&arg_ty, &elem_ty, line)?;
                 Ok(Type::Bool)
