@@ -37,6 +37,7 @@ pub struct Codegen<'ctx> {
     module: Module<'ctx>,
     builder: Builder<'ctx>,
     structs: HashMap<String, StructType<'ctx>>,
+    array_ty: StructType<'ctx>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     var_scopes: Vec<HashMap<String, PointerValue<'ctx>>>,
     type_scopes: Vec<HashMap<String, Type>>,
@@ -52,11 +53,25 @@ impl<'ctx> Codegen<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
+        let i32t = context.i32_type();
+        let i8ptr = context
+            .i8_type()
+            .ptr_type(AddressSpace::default());
+        let array_ty = context.struct_type(
+            &[
+                i32t.into(), // len
+                i32t.into(), // cap
+                i8ptr.into(), // data
+                i32t.into(), // elem_size
+            ],
+            false,
+        );
         Self {
             context,
             module,
             builder,
             structs: HashMap::new(),
+            array_ty,
             functions: HashMap::new(),
             var_scopes: vec![],
             type_scopes: vec![],
@@ -262,11 +277,33 @@ impl<'ctx> Codegen<'ctx> {
                 ret: Type::I32,
             },
         );
+        self.sigs.insert(
+            "int".into(),
+            FnSig {
+                params: vec![Type::Str],
+                ret: Type::I32,
+            },
+        );
+        self.sigs.insert(
+            "float".into(),
+            FnSig {
+                params: vec![Type::Str],
+                ret: Type::F64,
+            },
+        );
+        self.sigs.insert(
+            "sqrt".into(),
+            FnSig {
+                params: vec![Type::F64],
+                ret: Type::F64,
+            },
+        );
     }
 
     fn declare_runtime(&mut self) -> Result<(), String> {
         let i8ptr = self.context.i8_type().ptr_type(AddressSpace::default());
         let i32t = self.context.i32_type();
+        let i1t = self.context.bool_type();
         let voidt = self.context.void_type();
 
         let print = voidt.fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
@@ -302,6 +339,37 @@ impl<'ctx> Codegen<'ctx> {
                 false,
             );
         self.module.add_function("pebbles_str_eq", streq, None);
+
+        let int_str = i32t.fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
+        self.module.add_function("pebbles_int_str", int_str, None);
+
+        let float_str = self.context.f64_type().fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
+        self.module.add_function("pebbles_float_str", float_str, None);
+
+        let sqrt_f64 = self.context.f64_type().fn_type(&[BasicMetadataTypeEnum::from(self.context.f64_type())], false);
+        self.module.add_function("pebbles_sqrt_f64", sqrt_f64, None);
+
+        let str_index = i8ptr.fn_type(&[BasicMetadataTypeEnum::from(i8ptr), BasicMetadataTypeEnum::from(i32t)], false);
+        self.module.add_function("pebbles_str_index", str_index, None);
+
+        let array_new = self.array_ty.fn_type(
+            &[BasicMetadataTypeEnum::from(i32t), BasicMetadataTypeEnum::from(i32t)],
+            false,
+        );
+        self.module.add_function("pebbles_array_new", array_new, None);
+
+        let array_ptr = self.array_ty.ptr_type(AddressSpace::default());
+        let array_push = voidt.fn_type(
+            &[BasicMetadataTypeEnum::from(array_ptr), BasicMetadataTypeEnum::from(i8ptr)],
+            false,
+        );
+        self.module.add_function("pebbles_array_push", array_push, None);
+
+        let array_pop = i1t.fn_type(
+            &[BasicMetadataTypeEnum::from(array_ptr), BasicMetadataTypeEnum::from(i8ptr)],
+            false,
+        );
+        self.module.add_function("pebbles_array_pop", array_pop, None);
         Ok(())
     }
 
@@ -1653,8 +1721,8 @@ impl<'ctx> Codegen<'ctx> {
                 self.context.struct_type(&tys, false).into()
             }
             Type::Array(inner) => {
-                let elem = self.llvm_type(inner);
-                elem.ptr_type(AddressSpace::default()).into()
+                let _ = inner;
+                self.array_ty.into()
             }
             Type::Optional(inner) => {
                 let inner_ty = self.llvm_type(inner);
