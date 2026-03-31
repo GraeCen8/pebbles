@@ -314,9 +314,99 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Ok(cur)
             }
-            Type::Array(_) | Type::Void | Type::SelfType => {
-                Err("equality not supported for this type".into())
+            Type::Array(inner) => {
+                let func = self
+                    .current_fn
+                    .ok_or_else(|| "array equality outside function".to_string())?;
+                let l_len = self.array_len_from_value(l)?;
+                let r_len = self.array_len_from_value(r)?;
+                let len_eq = self.b(self.builder.build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    l_len,
+                    r_len,
+                    "len_eq",
+                ))?;
+
+                let result_alloca = self.create_entry_alloca("arr_eq", &Type::Bool)?;
+                let idx_alloca = self.create_entry_alloca("arr_idx", &Type::I32)?;
+
+                let len_ok_bb = self.context.append_basic_block(func, "arr_eq.len_ok");
+                let len_fail_bb = self.context.append_basic_block(func, "arr_eq.len_fail");
+                let cond_bb = self.context.append_basic_block(func, "arr_eq.cond");
+                let body_bb = self.context.append_basic_block(func, "arr_eq.body");
+                let end_bb = self.context.append_basic_block(func, "arr_eq.end");
+
+                self.b(self.builder.build_conditional_branch(len_eq, len_ok_bb, len_fail_bb))?;
+
+                self.builder.position_at_end(len_fail_bb);
+                self.b(self.builder.build_store(
+                    result_alloca,
+                    self.context.bool_type().const_int(0, false),
+                ))?;
+                self.b(self.builder.build_unconditional_branch(end_bb))?;
+
+                self.builder.position_at_end(len_ok_bb);
+                self.b(self.builder.build_store(
+                    result_alloca,
+                    self.context.bool_type().const_int(1, false),
+                ))?;
+                self.b(self.builder.build_store(
+                    idx_alloca,
+                    self.context.i32_type().const_int(0, false),
+                ))?;
+                self.b(self.builder.build_unconditional_branch(cond_bb))?;
+
+                self.builder.position_at_end(cond_bb);
+                let cur = self
+                    .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                    .into_int_value();
+                let cmp = self.b(self.builder.build_int_compare(
+                    inkwell::IntPredicate::SLT,
+                    cur,
+                    l_len,
+                    "cmp",
+                ))?;
+                self.b(self.builder.build_conditional_branch(cmp, body_bb, end_bb))?;
+
+                self.builder.position_at_end(body_bb);
+                let l_ptr = self.array_elem_ptr_from_value(l, cur, inner)?;
+                let r_ptr = self.array_elem_ptr_from_value(r, cur, inner)?;
+                let l_val = self.b(self.builder.build_load(self.llvm_type(inner), l_ptr, "l"))?;
+                let r_val = self.b(self.builder.build_load(self.llvm_type(inner), r_ptr, "r"))?;
+                let eq = self.compare_values(inner, l_val, r_val)?;
+                let is_eq = self.b(self.builder.build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    eq,
+                    self.context.bool_type().const_int(1, false),
+                    "is_eq",
+                ))?;
+                let fail_bb = self.context.append_basic_block(func, "arr_eq.fail");
+                let cont_bb = self.context.append_basic_block(func, "arr_eq.cont");
+                self.b(self.builder.build_conditional_branch(is_eq, cont_bb, fail_bb))?;
+
+                self.builder.position_at_end(fail_bb);
+                self.b(self.builder.build_store(
+                    result_alloca,
+                    self.context.bool_type().const_int(0, false),
+                ))?;
+                self.b(self.builder.build_unconditional_branch(end_bb))?;
+
+                self.builder.position_at_end(cont_bb);
+                let next = self.b(self.builder.build_int_add(
+                    cur,
+                    self.context.i32_type().const_int(1, false),
+                    "next",
+                ))?;
+                self.b(self.builder.build_store(idx_alloca, next))?;
+                self.b(self.builder.build_unconditional_branch(cond_bb))?;
+
+                self.builder.position_at_end(end_bb);
+                let res = self
+                    .b(self.builder.build_load(self.context.bool_type(), result_alloca, "res"))?
+                    .into_int_value();
+                Ok(res)
             }
+            Type::Void | Type::SelfType => Err("equality not supported for this type".into()),
         }
     }
 
@@ -1888,15 +1978,12 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
-                if matches!(ty, Type::Tuple(_) | Type::Optional(_) | Type::Named(_) | Type::Range) {
+                if matches!(ty, Type::Tuple(_) | Type::Optional(_) | Type::Named(_) | Type::Range | Type::Array(_)) {
                     let mut v = self.compare_values(ty, l, r)?;
                     if op == BinOp::NotEq {
                         v = self.b(self.builder.build_not(v, "not"))?;
                     }
                     return Ok(v.into());
-                }
-                if matches!(ty, Type::Array(_)) {
-                    return Err("equality not supported for arrays".into());
                 }
                 if *ty == Type::Str && (op == BinOp::Eq || op == BinOp::NotEq) {
                     let f = self
