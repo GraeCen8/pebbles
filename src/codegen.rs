@@ -1767,11 +1767,11 @@ impl<'ctx> Codegen<'ctx> {
             Type::Array(inner) => *inner,
             _ => return Err("for loop only supports range or array".into()),
         };
-        let arr_val = self.codegen_expr(iter, Some(&Type::Array(elem_ty.clone())))?;
+        let arr_val = self.codegen_expr(iter, Some(&Type::Array(Box::new(elem_ty.clone()))))?;
         let arr = arr_val
             .value
             .ok_or_else(|| "for array expects value".to_string())?;
-        let arr_alloca = self.create_entry_alloca("arr", &Type::Array(elem_ty.clone()))?;
+        let arr_alloca = self.create_entry_alloca("arr", &Type::Array(Box::new(elem_ty.clone())))?;
         self.b(self.builder.build_store(arr_alloca, arr))?;
 
         let idx_alloca = self.create_entry_alloca("i", &Type::I32)?;
@@ -1793,7 +1793,11 @@ impl<'ctx> Codegen<'ctx> {
         let cur = self
             .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
             .into_int_value();
-        let arr_loaded = self.b(self.builder.build_load(self.llvm_type(&Type::Array(elem_ty.clone())), arr_alloca, "arr"))?;
+        let arr_loaded = self.b(self.builder.build_load(
+            self.llvm_type(&Type::Array(Box::new(elem_ty.clone()))),
+            arr_alloca,
+            "arr",
+        ))?;
         let len = self.array_len_from_value(arr_loaded.into())?;
         let cmp = self.b(self.builder.build_int_compare(
             inkwell::IntPredicate::SLT,
