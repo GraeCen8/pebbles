@@ -8,7 +8,7 @@ use inkwell::module::Module;
 use inkwell::targets::{InitializationConfig, Target, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue, ValueKind,
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue, ValueKind,
 };
 use inkwell::{AddressSpace, OptimizationLevel};
 
@@ -133,6 +133,190 @@ impl<'ctx> Codegen<'ctx> {
         match call.try_as_basic_value() {
             ValueKind::Basic(v) => Some(v),
             _ => None,
+        }
+    }
+
+    fn elem_size_value(&self, elem_ty: &Type) -> Result<IntValue<'ctx>, String> {
+        let llvm_ty = self.llvm_type(elem_ty);
+        let size = llvm_ty
+            .size_of()
+            .ok_or_else(|| "size_of failed".to_string())?;
+        Ok(self.b(self.builder.build_int_cast(
+            size,
+            self.context.i32_type(),
+            "elem_size",
+        ))?)
+    }
+
+    fn array_len_from_value(&self, array_val: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>, String> {
+        let v = array_val
+            .into_struct_value();
+        let len = self
+            .b(self.builder.build_extract_value(v, 0, "len"))?
+            .into_int_value();
+        Ok(len)
+    }
+
+    fn array_data_ptr_from_value(
+        &self,
+        array_val: BasicValueEnum<'ctx>,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let v = array_val.into_struct_value();
+        let data = self
+            .b(self.builder.build_extract_value(v, 2, "data"))?
+            .into_pointer_value();
+        Ok(data)
+    }
+
+    fn array_elem_ptr_from_value(
+        &self,
+        array_val: BasicValueEnum<'ctx>,
+        idx: IntValue<'ctx>,
+        elem_ty: &Type,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let data = self.array_data_ptr_from_value(array_val)?;
+        let elem_size = self.elem_size_value(elem_ty)?;
+        let offset = self
+            .b(self.builder.build_int_mul(idx, elem_size, "ofs"))?;
+        let ptr = unsafe {
+            self.b(self.builder.build_gep(
+                self.context.i8_type(),
+                data,
+                &[offset],
+                "elem_ptr",
+            ))?
+        };
+        let elem_ptr = self
+            .b(self.builder.build_bit_cast(
+                ptr,
+                self.llvm_type(elem_ty).ptr_type(AddressSpace::default()),
+                "elem_cast",
+            ))?
+            .into_pointer_value();
+        Ok(elem_ptr)
+    }
+
+    fn compare_values(
+        &self,
+        ty: &Type,
+        l: BasicValueEnum<'ctx>,
+        r: BasicValueEnum<'ctx>,
+    ) -> Result<IntValue<'ctx>, String> {
+        match ty {
+            Type::I32 | Type::I64 | Type::Bool => Ok(self
+                .b(self.builder.build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    l.into_int_value(),
+                    r.into_int_value(),
+                    "eq",
+                ))?),
+            Type::F64 => Ok(self
+                .b(self.builder.build_float_compare(
+                    inkwell::FloatPredicate::OEQ,
+                    l.into_float_value(),
+                    r.into_float_value(),
+                    "feq",
+                ))?),
+            Type::Str => {
+                let f = self
+                    .module
+                    .get_function("pebbles_str_eq")
+                    .ok_or_else(|| "missing pebbles_str_eq".to_string())?;
+                let call = self.b(self.builder.build_call(
+                    f,
+                    &[
+                        BasicMetadataValueEnum::from(l),
+                        BasicMetadataValueEnum::from(r),
+                    ],
+                    "streq",
+                ))?;
+                Ok(self
+                    .call_value(call)
+                    .ok_or_else(|| "streq returned void".to_string())?
+                    .into_int_value())
+            }
+            Type::Range => {
+                let lv = l.into_struct_value();
+                let rv = r.into_struct_value();
+                let mut cur = self.context.bool_type().const_int(1, false);
+                for i in 0..3 {
+                    let le = self
+                        .b(self.builder.build_extract_value(lv, i as u32, "le"))?
+                        .into_int_value();
+                    let re = self
+                        .b(self.builder.build_extract_value(rv, i as u32, "re"))?
+                        .into_int_value();
+                    let eq = self.b(self.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        le,
+                        re,
+                        "eq",
+                    ))?;
+                    cur = self.b(self.builder.build_and(cur, eq, "and"))?;
+                }
+                Ok(cur)
+            }
+            Type::Tuple(elems) => {
+                let lv = l.into_struct_value();
+                let rv = r.into_struct_value();
+                let mut cur = self.context.bool_type().const_int(1, false);
+                for (idx, elem_ty) in elems.iter().enumerate() {
+                    let le = self
+                        .b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
+                    let re = self
+                        .b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
+                    let eq = self.compare_values(elem_ty, le, re)?;
+                    cur = self.b(self.builder.build_and(cur, eq, "and"))?;
+                }
+                Ok(cur)
+            }
+            Type::Optional(inner) => {
+                let lv = l.into_struct_value();
+                let rv = r.into_struct_value();
+                let ls = self
+                    .b(self.builder.build_extract_value(lv, 0, "ls"))?
+                    .into_int_value();
+                let rs = self
+                    .b(self.builder.build_extract_value(rv, 0, "rs"))?
+                    .into_int_value();
+                let both_some = self.b(self.builder.build_and(ls, rs, "both"))?;
+                let ls_not = self.b(self.builder.build_not(ls, "ls_not"))?;
+                let rs_not = self.b(self.builder.build_not(rs, "rs_not"))?;
+                let none_none = self.b(self.builder.build_and(ls_not, rs_not, "none"))?;
+                let inner_eq = if **inner == Type::Void {
+                    self.context.bool_type().const_int(1, false)
+                } else {
+                    let le = self
+                        .b(self.builder.build_extract_value(lv, 1, "le"))?;
+                    let re = self
+                        .b(self.builder.build_extract_value(rv, 1, "re"))?;
+                    self.compare_values(inner, le, re)?
+                };
+                let both_some_eq = self.b(self.builder.build_and(both_some, inner_eq, "both_eq"))?;
+                Ok(self.b(self.builder.build_or(none_none, both_some_eq, "opt_eq"))?)
+            }
+            Type::Named(name) => {
+                let info = self
+                    .struct_info
+                    .get(name)
+                    .ok_or_else(|| format!("unknown struct '{name}'"))?
+                    .clone();
+                let lv = l.into_struct_value();
+                let rv = r.into_struct_value();
+                let mut cur = self.context.bool_type().const_int(1, false);
+                for (idx, (_, fty)) in info.fields.iter().enumerate() {
+                    let le = self
+                        .b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
+                    let re = self
+                        .b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
+                    let eq = self.compare_values(fty, le, re)?;
+                    cur = self.b(self.builder.build_and(cur, eq, "and"))?;
+                }
+                Ok(cur)
+            }
+            Type::Array(_) | Type::Void | Type::SelfType => {
+                Err("equality not supported for this type".into())
+            }
         }
     }
 
@@ -606,6 +790,51 @@ impl<'ctx> Codegen<'ctx> {
                     ty: Type::Range,
                 })
             }
+            Expr::Array(elems, _) => {
+                let elem_ty = if elems.is_empty() {
+                    if let Some(Type::Array(inner)) = expected.cloned() {
+                        *inner
+                    } else {
+                        Type::Void
+                    }
+                } else {
+                    self.infer_expr_type(&elems[0])?
+                };
+                let len_val = self.context.i32_type().const_int(elems.len() as u64, false);
+                let elem_size = if elems.is_empty() {
+                    self.context.i32_type().const_int(0, false)
+                } else {
+                    self.elem_size_value(&elem_ty)?
+                };
+                let f = self
+                    .module
+                    .get_function("pebbles_array_new")
+                    .ok_or_else(|| "missing pebbles_array_new".to_string())?;
+                let call = self.b(self.builder.build_call(
+                    f,
+                    &[
+                        BasicMetadataValueEnum::from(elem_size),
+                        BasicMetadataValueEnum::from(len_val),
+                    ],
+                    "arr_new",
+                ))?;
+                let arr_val = self
+                    .call_value(call)
+                    .ok_or_else(|| "array_new returned void".to_string())?;
+                if !elems.is_empty() {
+                    for (idx, expr) in elems.iter().enumerate() {
+                        let v = self.codegen_expr(expr, Some(&elem_ty))?;
+                        let val = v.value.ok_or_else(|| "array elem expects value".to_string())?;
+                        let idx_val = self.context.i32_type().const_int(idx as u64, false);
+                        let ptr = self.array_elem_ptr_from_value(arr_val, idx_val, &elem_ty)?;
+                        self.b(self.builder.build_store(ptr, val))?;
+                    }
+                }
+                Ok(CgValue {
+                    value: Some(arr_val),
+                    ty: Type::Array(Box::new(elem_ty)),
+                })
+            }
             Expr::StructLit { name, fields, .. } => {
                 let info = self
                     .struct_info
@@ -637,6 +866,19 @@ impl<'ctx> Codegen<'ctx> {
                 })
             }
             Expr::FieldAccess { obj, field, .. } => {
+                let obj_ty = self.infer_expr_type(obj)?;
+                if let Type::Array(_) = obj_ty {
+                    if field == "length" {
+                        let arr = self.codegen_expr(obj, Some(&obj_ty))?;
+                        let val = arr.value.ok_or_else(|| "array expects value".to_string())?;
+                        let len = self.array_len_from_value(val)?;
+                        return Ok(CgValue {
+                            value: Some(len.into()),
+                            ty: Type::I32,
+                        });
+                    }
+                    return Err("unknown field on array".into());
+                }
                 let (ptr, field_ty) = self.codegen_field_ptr(obj, field)?;
                 let llvm_ty = self.llvm_type(&field_ty);
                 let val = self.b(self.builder.build_load(llvm_ty, ptr, field))?;
@@ -706,6 +948,13 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 if name == "len" {
                     let arg = args.first().ok_or_else(|| "len expects 1 arg".to_string())?;
+                    let arg_ty = self.infer_expr_type(arg)?;
+                    if matches!(arg_ty, Type::Array(_)) {
+                        let v = self.codegen_expr(arg, Some(&arg_ty))?;
+                        let val = v.value.ok_or_else(|| "len expects value".to_string())?;
+                        let len = self.array_len_from_value(val)?;
+                        return Ok(CgValue { value: Some(len.into()), ty: Type::I32 });
+                    }
                     let v = self.codegen_expr(arg, Some(&Type::Str))?;
                     let val = v.value.ok_or_else(|| "len expects value".to_string())?;
                     let f = self
@@ -747,6 +996,60 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     return Err("str() only supports i32 and str for now".into());
                 }
+                if name == "int" {
+                    let arg = args.first().ok_or_else(|| "int expects 1 arg".to_string())?;
+                    let v = self.codegen_expr(arg, Some(&Type::Str))?;
+                    let val = v.value.ok_or_else(|| "int expects value".to_string())?;
+                    let f = self
+                        .module
+                        .get_function("pebbles_int_str")
+                        .ok_or_else(|| "missing pebbles_int_str".to_string())?;
+                    let call = self.b(self.builder.build_call(
+                        f,
+                        &[BasicMetadataValueEnum::from(val)],
+                        "int",
+                    ))?;
+                    let v = self
+                        .call_value(call)
+                        .ok_or_else(|| "int returned void".to_string())?;
+                    return Ok(CgValue { value: Some(v), ty: Type::I32 });
+                }
+                if name == "float" {
+                    let arg = args.first().ok_or_else(|| "float expects 1 arg".to_string())?;
+                    let v = self.codegen_expr(arg, Some(&Type::Str))?;
+                    let val = v.value.ok_or_else(|| "float expects value".to_string())?;
+                    let f = self
+                        .module
+                        .get_function("pebbles_float_str")
+                        .ok_or_else(|| "missing pebbles_float_str".to_string())?;
+                    let call = self.b(self.builder.build_call(
+                        f,
+                        &[BasicMetadataValueEnum::from(val)],
+                        "float",
+                    ))?;
+                    let v = self
+                        .call_value(call)
+                        .ok_or_else(|| "float returned void".to_string())?;
+                    return Ok(CgValue { value: Some(v), ty: Type::F64 });
+                }
+                if name == "sqrt" {
+                    let arg = args.first().ok_or_else(|| "sqrt expects 1 arg".to_string())?;
+                    let v = self.codegen_expr(arg, Some(&Type::F64))?;
+                    let val = v.value.ok_or_else(|| "sqrt expects value".to_string())?;
+                    let f = self
+                        .module
+                        .get_function("pebbles_sqrt_f64")
+                        .ok_or_else(|| "missing pebbles_sqrt_f64".to_string())?;
+                    let call = self.b(self.builder.build_call(
+                        f,
+                        &[BasicMetadataValueEnum::from(val)],
+                        "sqrt",
+                    ))?;
+                    let v = self
+                        .call_value(call)
+                        .ok_or_else(|| "sqrt returned void".to_string())?;
+                    return Ok(CgValue { value: Some(v), ty: Type::F64 });
+                }
                 let sig = self
                     .sigs
                     .get(name)
@@ -776,6 +1079,154 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expr::MethodCall { obj, method, args, .. } => {
                 let obj_ty = self.infer_expr_type(obj)?;
+                if let Type::Array(inner) = obj_ty {
+                    match method.as_str() {
+                        "length" => {
+                            let arr = self.codegen_expr(obj, Some(&Type::Array(inner.clone())))?;
+                            let val = arr.value.ok_or_else(|| "array expects value".to_string())?;
+                            let len = self.array_len_from_value(val)?;
+                            return Ok(CgValue { value: Some(len.into()), ty: Type::I32 });
+                        }
+                        "push" => {
+                            let arg = args.first().ok_or_else(|| "push expects 1 arg".to_string())?;
+                            let arr_ptr = match obj {
+                                Expr::Ident(name, _) => self.lookup_var(name)?,
+                                _ => return Err("push requires a mutable array variable".into()),
+                            };
+                            let v = self.codegen_expr(arg, Some(&inner))?;
+                            let val = v.value.ok_or_else(|| "push expects value".to_string())?;
+                            let tmp = self.create_entry_alloca("push_tmp", &inner)?;
+                            self.b(self.builder.build_store(tmp, val))?;
+                            let tmp_cast = self
+                                .b(self.builder.build_bit_cast(
+                                    tmp,
+                                    self.context.i8_type().ptr_type(AddressSpace::default()),
+                                    "push_cast",
+                                ))?
+                                .into_pointer_value();
+                            let f = self
+                                .module
+                                .get_function("pebbles_array_push")
+                                .ok_or_else(|| "missing pebbles_array_push".to_string())?;
+                            self.b(self.builder.build_call(
+                                f,
+                                &[
+                                    BasicMetadataValueEnum::from(arr_ptr),
+                                    BasicMetadataValueEnum::from(tmp_cast),
+                                ],
+                                "push",
+                            ))?;
+                            return Ok(CgValue { value: None, ty: Type::Void });
+                        }
+                        "pop" => {
+                            let arr_ptr = match obj {
+                                Expr::Ident(name, _) => self.lookup_var(name)?,
+                                _ => return Err("pop requires a mutable array variable".into()),
+                            };
+                            let tmp = self.create_entry_alloca("pop_tmp", &inner)?;
+                            let tmp_cast = self
+                                .b(self.builder.build_bit_cast(
+                                    tmp,
+                                    self.context.i8_type().ptr_type(AddressSpace::default()),
+                                    "pop_cast",
+                                ))?
+                                .into_pointer_value();
+                            let f = self
+                                .module
+                                .get_function("pebbles_array_pop")
+                                .ok_or_else(|| "missing pebbles_array_pop".to_string())?;
+                            let call = self.b(self.builder.build_call(
+                                f,
+                                &[
+                                    BasicMetadataValueEnum::from(arr_ptr),
+                                    BasicMetadataValueEnum::from(tmp_cast),
+                                ],
+                                "pop",
+                            ))?;
+                            let popped = self
+                                .call_value(call)
+                                .ok_or_else(|| "pop returned void".to_string())?
+                                .into_int_value();
+                            let llvm_ty = self
+                                .llvm_type(&Type::Optional(inner.clone()))
+                                .into_struct_type();
+                            let mut val = llvm_ty.get_undef();
+                            val = self
+                                .b(self.builder.build_insert_value(val, popped, 0, "is_some"))?
+                                .into_struct_value();
+                            let loaded = self.b(self.builder.build_load(self.llvm_type(&inner), tmp, "pval"))?;
+                            val = self
+                                .b(self.builder.build_insert_value(val, loaded, 1, "oval"))?
+                                .into_struct_value();
+                            return Ok(CgValue {
+                                value: Some(val.into()),
+                                ty: Type::Optional(inner),
+                            });
+                        }
+                        "contains" => {
+                            let arg = args.first().ok_or_else(|| "contains expects 1 arg".to_string())?;
+                            let arr = self.codegen_expr(obj, Some(&Type::Array(inner.clone())))?;
+                            let arr_val = arr.value.ok_or_else(|| "array expects value".to_string())?;
+                            let needle = self.codegen_expr(arg, Some(&inner))?;
+                            let needle_val = needle.value.ok_or_else(|| "contains expects value".to_string())?;
+
+                            let func = self
+                                .current_fn
+                                .ok_or_else(|| "contains outside function".to_string())?;
+                            let idx_alloca = self.create_entry_alloca("idx", &Type::I32)?;
+                            let res_alloca = self.create_entry_alloca("found", &Type::Bool)?;
+                            self.b(self.builder.build_store(
+                                idx_alloca,
+                                self.context.i32_type().const_int(0, false),
+                            ))?;
+                            self.b(self.builder.build_store(
+                                res_alloca,
+                                self.context.bool_type().const_int(0, false),
+                            ))?;
+
+                            let cond_bb = self.context.append_basic_block(func, "contains.cond");
+                            let body_bb = self.context.append_basic_block(func, "contains.body");
+                            let end_bb = self.context.append_basic_block(func, "contains.end");
+
+                            self.b(self.builder.build_unconditional_branch(cond_bb))?;
+                            self.builder.position_at_end(cond_bb);
+                            let cur = self
+                                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                                .into_int_value();
+                            let len = self.array_len_from_value(arr_val)?;
+                            let cmp = self.b(self.builder.build_int_compare(
+                                inkwell::IntPredicate::SLT,
+                                cur,
+                                len,
+                                "cmp",
+                            ))?;
+                            self.b(self.builder.build_conditional_branch(cmp, body_bb, end_bb))?;
+
+                            self.builder.position_at_end(body_bb);
+                            let elem_ptr = self.array_elem_ptr_from_value(arr_val, cur, &inner)?;
+                            let elem_val = self.b(self.builder.build_load(self.llvm_type(&inner), elem_ptr, "elem"))?;
+                            let eq = self.compare_values(&inner, elem_val, needle_val)?;
+                            let prev = self
+                                .b(self.builder.build_load(self.context.bool_type(), res_alloca, "prev"))?
+                                .into_int_value();
+                            let new_val = self.b(self.builder.build_or(prev, eq, "or"))?;
+                            self.b(self.builder.build_store(res_alloca, new_val))?;
+                            let next = self.b(self.builder.build_int_add(
+                                cur,
+                                self.context.i32_type().const_int(1, false),
+                                "next",
+                            ))?;
+                            self.b(self.builder.build_store(idx_alloca, next))?;
+                            self.b(self.builder.build_unconditional_branch(cond_bb))?;
+
+                            self.builder.position_at_end(end_bb);
+                            let found = self
+                                .b(self.builder.build_load(self.context.bool_type(), res_alloca, "found"))?;
+                            return Ok(CgValue { value: Some(found.into()), ty: Type::Bool });
+                        }
+                        _ => return Err("unknown array method".into()),
+                    }
+                }
                 let struct_name = match obj_ty {
                     Type::Named(n) => n,
                     _ => return Err("method call on non-struct".into()),
@@ -839,7 +1290,43 @@ impl<'ctx> Codegen<'ctx> {
                 let exp = expected.or(inferred.as_ref());
                 self.codegen_match_expr(subject, arms, exp)
             }
-            Expr::Array(_, _) | Expr::Index { .. } => Err("expression not codegenned yet".into()),
+            Expr::Index { obj, index, .. } => {
+                let obj_ty = self.infer_expr_type(obj)?;
+                match obj_ty {
+                    Type::Array(inner) => {
+                        let arr = self.codegen_expr(obj, Some(&Type::Array(inner.clone())))?;
+                        let arr_val = arr.value.ok_or_else(|| "index expects value".to_string())?;
+                        let idx = self.codegen_expr(index, Some(&Type::I32))?;
+                        let idx_val = idx.value.ok_or_else(|| "index expects value".to_string())?;
+                        let ptr = self.array_elem_ptr_from_value(arr_val, idx_val.into_int_value(), &inner)?;
+                        let val = self.b(self.builder.build_load(self.llvm_type(&inner), ptr, "idx"))?;
+                        Ok(CgValue { value: Some(val.into()), ty: inner })
+                    }
+                    Type::Str => {
+                        let s = self.codegen_expr(obj, Some(&Type::Str))?;
+                        let sval = s.value.ok_or_else(|| "index expects value".to_string())?;
+                        let idx = self.codegen_expr(index, Some(&Type::I32))?;
+                        let idx_val = idx.value.ok_or_else(|| "index expects value".to_string())?;
+                        let f = self
+                            .module
+                            .get_function("pebbles_str_index")
+                            .ok_or_else(|| "missing pebbles_str_index".to_string())?;
+                        let call = self.b(self.builder.build_call(
+                            f,
+                            &[
+                                BasicMetadataValueEnum::from(sval),
+                                BasicMetadataValueEnum::from(idx_val),
+                            ],
+                            "str_idx",
+                        ))?;
+                        let v = self
+                            .call_value(call)
+                            .ok_or_else(|| "str_index returned void".to_string())?;
+                        Ok(CgValue { value: Some(v), ty: Type::Str })
+                    }
+                    _ => Err("indexing not supported".into()),
+                }
+            }
         }
     }
 
@@ -1181,43 +1668,120 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_for(&mut self, var: &str, iter: &Expr, body: &[Stmt]) -> Result<(), String> {
         let iter_ty = self.infer_expr_type(iter)?;
-        if iter_ty != Type::Range {
-            return Err("for loop only supports range for now".into());
+        if iter_ty != Type::Range && !matches!(iter_ty, Type::Array(_)) {
+            return Err("for loop only supports range or array".into());
         }
         let func = self
             .current_fn
             .ok_or_else(|| "for outside function".to_string())?;
 
-        let range_val = self.codegen_expr(iter, Some(&Type::Range))?;
-        let range = range_val
-            .value
-            .ok_or_else(|| "for range expects value".to_string())?;
-        let start = self
-            .b(self.builder.build_extract_value(
-                range.into_struct_value(),
-                0,
-                "start",
-            ))?
-            .into_int_value();
-        let end = self
-            .b(self.builder.build_extract_value(
-                range.into_struct_value(),
-                1,
-                "end",
-            ))?
-            .into_int_value();
-        let inclusive = self
-            .b(self.builder.build_extract_value(
-                range.into_struct_value(),
-                2,
-                "incl",
-            ))?
-            .into_int_value();
+        if iter_ty == Type::Range {
+            let range_val = self.codegen_expr(iter, Some(&Type::Range))?;
+            let range = range_val
+                .value
+                .ok_or_else(|| "for range expects value".to_string())?;
+            let start = self
+                .b(self.builder.build_extract_value(
+                    range.into_struct_value(),
+                    0,
+                    "start",
+                ))?
+                .into_int_value();
+            let end = self
+                .b(self.builder.build_extract_value(
+                    range.into_struct_value(),
+                    1,
+                    "end",
+                ))?
+                .into_int_value();
+            let inclusive = self
+                .b(self.builder.build_extract_value(
+                    range.into_struct_value(),
+                    2,
+                    "incl",
+                ))?
+                .into_int_value();
 
-        let idx_alloca = self.create_entry_alloca(var, &Type::I32)?;
-        self.b(self.builder.build_store(idx_alloca, start))?;
+            let idx_alloca = self.create_entry_alloca(var, &Type::I32)?;
+            self.b(self.builder.build_store(idx_alloca, start))?;
+            self.push_scope();
+            self.bind_var(var, Type::I32, idx_alloca);
+
+            let cond_bb = self.context.append_basic_block(func, "for.cond");
+            let body_bb = self.context.append_basic_block(func, "for.body");
+            let incr_bb = self.context.append_basic_block(func, "for.incr");
+            let end_bb = self.context.append_basic_block(func, "for.end");
+
+            self.b(self.builder.build_unconditional_branch(cond_bb))?;
+            self.builder.position_at_end(cond_bb);
+            let cur = self
+                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                .into_int_value();
+            let cmp_le = self.b(self.builder.build_int_compare(
+                inkwell::IntPredicate::SLE,
+                cur,
+                end,
+                "cmple",
+            ))?;
+            let cmp_lt = self.b(self.builder.build_int_compare(
+                inkwell::IntPredicate::SLT,
+                cur,
+                end,
+                "cmplt",
+            ))?;
+            let cmp = self.b(self.builder.build_select(inclusive, cmp_le, cmp_lt, "cmp"))?;
+            let cmp_i1 = cmp.into_int_value();
+            self.b(
+                self.builder
+                    .build_conditional_branch(cmp_i1, body_bb, end_bb),
+            )?;
+
+            self.builder.position_at_end(body_bb);
+            self.break_stack.push(end_bb);
+            self.continue_stack.push(incr_bb);
+            self.codegen_block(body, None)?;
+            self.break_stack.pop();
+            self.continue_stack.pop();
+            if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+                self.b(self.builder.build_unconditional_branch(incr_bb))?;
+            }
+
+            self.builder.position_at_end(incr_bb);
+            let cur = self
+                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                .into_int_value();
+            let next = self.b(self.builder.build_int_add(
+                cur,
+                self.context.i32_type().const_int(1, false),
+                "i.next",
+            ))?;
+            self.b(self.builder.build_store(idx_alloca, next))?;
+            self.b(self.builder.build_unconditional_branch(cond_bb))?;
+
+            self.builder.position_at_end(end_bb);
+            self.pop_scope();
+            return Ok(());
+        }
+
+        let elem_ty = match iter_ty {
+            Type::Array(inner) => *inner,
+            _ => return Err("for loop only supports range or array".into()),
+        };
+        let arr_val = self.codegen_expr(iter, Some(&Type::Array(elem_ty.clone())))?;
+        let arr = arr_val
+            .value
+            .ok_or_else(|| "for array expects value".to_string())?;
+        let arr_alloca = self.create_entry_alloca("arr", &Type::Array(elem_ty.clone()))?;
+        self.b(self.builder.build_store(arr_alloca, arr))?;
+
+        let idx_alloca = self.create_entry_alloca("i", &Type::I32)?;
+        self.b(self.builder.build_store(
+            idx_alloca,
+            self.context.i32_type().const_int(0, false),
+        ))?;
         self.push_scope();
-        self.bind_var(var, Type::I32, idx_alloca);
+        let var_alloca = self.create_entry_alloca(var, &elem_ty)?;
+        self.bind_var(var, elem_ty.clone(), var_alloca);
 
         let cond_bb = self.context.append_basic_block(func, "for.cond");
         let body_bb = self.context.append_basic_block(func, "for.body");
@@ -1229,26 +1793,20 @@ impl<'ctx> Codegen<'ctx> {
         let cur = self
             .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
             .into_int_value();
-        let cmp_le = self.b(self.builder.build_int_compare(
-            inkwell::IntPredicate::SLE,
-            cur,
-            end,
-            "cmple",
-        ))?;
-        let cmp_lt = self.b(self.builder.build_int_compare(
+        let arr_loaded = self.b(self.builder.build_load(self.llvm_type(&Type::Array(elem_ty.clone())), arr_alloca, "arr"))?;
+        let len = self.array_len_from_value(arr_loaded.into())?;
+        let cmp = self.b(self.builder.build_int_compare(
             inkwell::IntPredicate::SLT,
             cur,
-            end,
+            len,
             "cmplt",
         ))?;
-        let cmp = self.b(self.builder.build_select(inclusive, cmp_le, cmp_lt, "cmp"))?;
-        let cmp_i1 = cmp.into_int_value();
-        self.b(
-            self.builder
-                .build_conditional_branch(cmp_i1, body_bb, end_bb),
-        )?;
+        self.b(self.builder.build_conditional_branch(cmp, body_bb, end_bb))?;
 
         self.builder.position_at_end(body_bb);
+        let elem_ptr = self.array_elem_ptr_from_value(arr_loaded.into(), cur, &elem_ty)?;
+        let elem_val = self.b(self.builder.build_load(self.llvm_type(&elem_ty), elem_ptr, "elem"))?;
+        self.b(self.builder.build_store(var_alloca, elem_val))?;
         self.break_stack.push(end_bb);
         self.continue_stack.push(incr_bb);
         self.codegen_block(body, None)?;
@@ -1259,13 +1817,10 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         self.builder.position_at_end(incr_bb);
-        let cur = self
-            .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
-            .into_int_value();
         let next = self.b(self.builder.build_int_add(
             cur,
             self.context.i32_type().const_int(1, false),
-            "i.next",
+            "next",
         ))?;
         self.b(self.builder.build_store(idx_alloca, next))?;
         self.b(self.builder.build_unconditional_branch(cond_bb))?;
@@ -1329,6 +1884,16 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
+                if matches!(ty, Type::Tuple(_) | Type::Optional(_) | Type::Named(_) | Type::Range) {
+                    let mut v = self.compare_values(ty, l, r)?;
+                    if op == BinOp::NotEq {
+                        v = self.b(self.builder.build_not(v, "not"))?;
+                    }
+                    return Ok(v.into());
+                }
+                if matches!(ty, Type::Array(_)) {
+                    return Err("equality not supported for arrays".into());
+                }
                 if *ty == Type::Str && (op == BinOp::Eq || op == BinOp::NotEq) {
                     let f = self
                         .module
@@ -1455,7 +2020,26 @@ impl<'ctx> Codegen<'ctx> {
                 let (ptr, ty) = self.codegen_field_ptr(obj, field)?;
                 Ok((ptr, ty))
             }
-            AssignTarget::Index { .. } => Err("index assignment not codegenned yet".into()),
+            AssignTarget::Index { obj, index, .. } => {
+                let obj_ty = self.infer_expr_type(obj)?;
+                let elem_ty = match obj_ty {
+                    Type::Array(inner) => *inner,
+                    _ => return Err("index assignment only supports arrays".into()),
+                };
+                let arr_ptr = match obj {
+                    Expr::Ident(name, _) => self.lookup_var(name)?,
+                    _ => return Err("index assignment requires array variable".into()),
+                };
+                let arr_val = self.b(self.builder.build_load(
+                    self.llvm_type(&Type::Array(Box::new(elem_ty.clone()))),
+                    arr_ptr,
+                    "arr",
+                ))?;
+                let idx = self.codegen_expr(index, Some(&Type::I32))?;
+                let idx_val = idx.value.ok_or_else(|| "index expects value".to_string())?;
+                let elem_ptr = self.array_elem_ptr_from_value(arr_val, idx_val.into_int_value(), &elem_ty)?;
+                Ok((elem_ptr, elem_ty))
+            }
         }
     }
 
@@ -1589,6 +2173,12 @@ impl<'ctx> Codegen<'ctx> {
             Expr::StructLit { name, .. } => Ok(Type::Named(name.clone())),
             Expr::FieldAccess { obj, field, .. } => {
                 let obj_ty = self.infer_expr_type(obj)?;
+                if let Type::Array(_) = obj_ty {
+                    if field == "length" {
+                        return Ok(Type::I32);
+                    }
+                    return Err("unknown field on array".into());
+                }
                 let struct_name = match obj_ty {
                     Type::Named(n) => n,
                     _ => return Err("field access on non-struct".into()),
@@ -1627,6 +2217,15 @@ impl<'ctx> Codegen<'ctx> {
                 .ok_or_else(|| format!("unknown function '{name}'")),
             Expr::MethodCall { obj, method, .. } => {
                 let obj_ty = self.infer_expr_type(obj)?;
+                if let Type::Array(inner) = obj_ty {
+                    return match method.as_str() {
+                        "length" => Ok(Type::I32),
+                        "push" => Ok(Type::Void),
+                        "pop" => Ok(Type::Optional(inner)),
+                        "contains" => Ok(Type::Bool),
+                        _ => Err("unknown array method".into()),
+                    };
+                }
                 let struct_name = match obj_ty {
                     Type::Named(n) => n,
                     _ => return Err("method call on non-struct".into()),
@@ -1666,8 +2265,21 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Ok(result.unwrap_or(Type::Void))
             }
-            Expr::Array(_, _) | Expr::Index { .. } => {
-                Err("expression type not implemented yet".into())
+            Expr::Array(elems, _) => {
+                if elems.is_empty() {
+                    Ok(Type::Array(Box::new(Type::Void)))
+                } else {
+                    let elem = self.infer_expr_type(&elems[0])?;
+                    Ok(Type::Array(Box::new(elem)))
+                }
+            }
+            Expr::Index { obj, .. } => {
+                let obj_ty = self.infer_expr_type(obj)?;
+                match obj_ty {
+                    Type::Array(inner) => Ok(*inner),
+                    Type::Str => Ok(Type::Str),
+                    _ => Err("indexing not supported".into()),
+                }
             }
         }
     }
