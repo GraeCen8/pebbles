@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use inkwell::builder::Builder;
 use inkwell::basic_block::BasicBlock;
+use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::targets::{InitializationConfig, Target, TargetMachine};
@@ -54,15 +54,13 @@ impl<'ctx> Codegen<'ctx> {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
         let i32t = context.i32_type();
-        let i8ptr = context
-            .i8_type()
-            .ptr_type(AddressSpace::default());
+        let i8ptr = context.i8_type().ptr_type(AddressSpace::default());
         let array_ty = context.struct_type(
             &[
-                i32t.into(), // len
-                i32t.into(), // cap
+                i32t.into(),  // len
+                i32t.into(),  // cap
                 i8ptr.into(), // data
-                i32t.into(), // elem_size
+                i32t.into(),  // elem_size
             ],
             false,
         );
@@ -141,16 +139,16 @@ impl<'ctx> Codegen<'ctx> {
         let size = llvm_ty
             .size_of()
             .ok_or_else(|| "size_of failed".to_string())?;
-        Ok(self.b(self.builder.build_int_cast(
-            size,
-            self.context.i32_type(),
-            "elem_size",
-        ))?)
+        Ok(self.b(self
+            .builder
+            .build_int_cast(size, self.context.i32_type(), "elem_size"))?)
     }
 
-    fn array_len_from_value(&self, array_val: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>, String> {
-        let v = array_val
-            .into_struct_value();
+    fn array_len_from_value(
+        &self,
+        array_val: BasicValueEnum<'ctx>,
+    ) -> Result<IntValue<'ctx>, String> {
+        let v = array_val.into_struct_value();
         let len = self
             .b(self.builder.build_extract_value(v, 0, "len"))?
             .into_int_value();
@@ -176,15 +174,11 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<PointerValue<'ctx>, String> {
         let data = self.array_data_ptr_from_value(array_val)?;
         let elem_size = self.elem_size_value(elem_ty)?;
-        let offset = self
-            .b(self.builder.build_int_mul(idx, elem_size, "ofs"))?;
+        let offset = self.b(self.builder.build_int_mul(idx, elem_size, "ofs"))?;
         let ptr = unsafe {
-            self.b(self.builder.build_gep(
-                self.context.i8_type(),
-                data,
-                &[offset],
-                "elem_ptr",
-            ))?
+            self.b(self
+                .builder
+                .build_gep(self.context.i8_type(), data, &[offset], "elem_ptr"))?
         };
         let elem_ptr = self
             .b(self.builder.build_bit_cast(
@@ -203,20 +197,18 @@ impl<'ctx> Codegen<'ctx> {
         r: BasicValueEnum<'ctx>,
     ) -> Result<IntValue<'ctx>, String> {
         match ty {
-            Type::I32 | Type::I64 | Type::Bool => Ok(self
-                .b(self.builder.build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    l.into_int_value(),
-                    r.into_int_value(),
-                    "eq",
-                ))?),
-            Type::F64 => Ok(self
-                .b(self.builder.build_float_compare(
-                    inkwell::FloatPredicate::OEQ,
-                    l.into_float_value(),
-                    r.into_float_value(),
-                    "feq",
-                ))?),
+            Type::I32 | Type::I64 | Type::Bool => Ok(self.b(self.builder.build_int_compare(
+                inkwell::IntPredicate::EQ,
+                l.into_int_value(),
+                r.into_int_value(),
+                "eq",
+            ))?),
+            Type::F64 => Ok(self.b(self.builder.build_float_compare(
+                inkwell::FloatPredicate::OEQ,
+                l.into_float_value(),
+                r.into_float_value(),
+                "feq",
+            ))?),
             Type::Str => {
                 let f = self
                     .module
@@ -261,10 +253,8 @@ impl<'ctx> Codegen<'ctx> {
                 let rv = r.into_struct_value();
                 let mut cur = self.context.bool_type().const_int(1, false);
                 for (idx, elem_ty) in elems.iter().enumerate() {
-                    let le = self
-                        .b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
-                    let re = self
-                        .b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
+                    let le = self.b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
+                    let re = self.b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
                     let eq = self.compare_values(elem_ty, le, re)?;
                     cur = self.b(self.builder.build_and(cur, eq, "and"))?;
                 }
@@ -286,13 +276,12 @@ impl<'ctx> Codegen<'ctx> {
                 let inner_eq = if **inner == Type::Void {
                     self.context.bool_type().const_int(1, false)
                 } else {
-                    let le = self
-                        .b(self.builder.build_extract_value(lv, 1, "le"))?;
-                    let re = self
-                        .b(self.builder.build_extract_value(rv, 1, "re"))?;
+                    let le = self.b(self.builder.build_extract_value(lv, 1, "le"))?;
+                    let re = self.b(self.builder.build_extract_value(rv, 1, "re"))?;
                     self.compare_values(inner, le, re)?
                 };
-                let both_some_eq = self.b(self.builder.build_and(both_some, inner_eq, "both_eq"))?;
+                let both_some_eq =
+                    self.b(self.builder.build_and(both_some, inner_eq, "both_eq"))?;
                 Ok(self.b(self.builder.build_or(none_none, both_some_eq, "opt_eq"))?)
             }
             Type::Named(name) => {
@@ -305,10 +294,8 @@ impl<'ctx> Codegen<'ctx> {
                 let rv = r.into_struct_value();
                 let mut cur = self.context.bool_type().const_int(1, false);
                 for (idx, (_, fty)) in info.fields.iter().enumerate() {
-                    let le = self
-                        .b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
-                    let re = self
-                        .b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
+                    let le = self.b(self.builder.build_extract_value(lv, idx as u32, "le"))?;
+                    let re = self.b(self.builder.build_extract_value(rv, idx as u32, "re"))?;
                     let eq = self.compare_values(fty, le, re)?;
                     cur = self.b(self.builder.build_and(cur, eq, "and"))?;
                 }
@@ -336,29 +323,30 @@ impl<'ctx> Codegen<'ctx> {
                 let body_bb = self.context.append_basic_block(func, "arr_eq.body");
                 let end_bb = self.context.append_basic_block(func, "arr_eq.end");
 
-                self.b(self.builder.build_conditional_branch(len_eq, len_ok_bb, len_fail_bb))?;
+                self.b(self
+                    .builder
+                    .build_conditional_branch(len_eq, len_ok_bb, len_fail_bb))?;
 
                 self.builder.position_at_end(len_fail_bb);
-                self.b(self.builder.build_store(
-                    result_alloca,
-                    self.context.bool_type().const_int(0, false),
-                ))?;
+                self.b(self
+                    .builder
+                    .build_store(result_alloca, self.context.bool_type().const_int(0, false)))?;
                 self.b(self.builder.build_unconditional_branch(end_bb))?;
 
                 self.builder.position_at_end(len_ok_bb);
-                self.b(self.builder.build_store(
-                    result_alloca,
-                    self.context.bool_type().const_int(1, false),
-                ))?;
-                self.b(self.builder.build_store(
-                    idx_alloca,
-                    self.context.i32_type().const_int(0, false),
-                ))?;
+                self.b(self
+                    .builder
+                    .build_store(result_alloca, self.context.bool_type().const_int(1, false)))?;
+                self.b(self
+                    .builder
+                    .build_store(idx_alloca, self.context.i32_type().const_int(0, false)))?;
                 self.b(self.builder.build_unconditional_branch(cond_bb))?;
 
                 self.builder.position_at_end(cond_bb);
                 let cur = self
-                    .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                    .b(self
+                        .builder
+                        .build_load(self.context.i32_type(), idx_alloca, "i"))?
                     .into_int_value();
                 let cmp = self.b(self.builder.build_int_compare(
                     inkwell::IntPredicate::SLT,
@@ -382,13 +370,14 @@ impl<'ctx> Codegen<'ctx> {
                 ))?;
                 let fail_bb = self.context.append_basic_block(func, "arr_eq.fail");
                 let cont_bb = self.context.append_basic_block(func, "arr_eq.cont");
-                self.b(self.builder.build_conditional_branch(is_eq, cont_bb, fail_bb))?;
+                self.b(self
+                    .builder
+                    .build_conditional_branch(is_eq, cont_bb, fail_bb))?;
 
                 self.builder.position_at_end(fail_bb);
-                self.b(self.builder.build_store(
-                    result_alloca,
-                    self.context.bool_type().const_int(0, false),
-                ))?;
+                self.b(self
+                    .builder
+                    .build_store(result_alloca, self.context.bool_type().const_int(0, false)))?;
                 self.b(self.builder.build_unconditional_branch(end_bb))?;
 
                 self.builder.position_at_end(cont_bb);
@@ -402,7 +391,9 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.builder.position_at_end(end_bb);
                 let res = self
-                    .b(self.builder.build_load(self.context.bool_type(), result_alloca, "res"))?
+                    .b(self
+                        .builder
+                        .build_load(self.context.bool_type(), result_alloca, "res"))?
                     .into_int_value();
                 Ok(res)
             }
@@ -438,10 +429,8 @@ impl<'ctx> Codegen<'ctx> {
                             ret: method.ret.clone(),
                         };
                         info.methods.insert(method.name.clone(), sig.clone());
-                        self.sigs.insert(
-                            format!("{}__{}", imp.type_name, method.name),
-                            sig,
-                        );
+                        self.sigs
+                            .insert(format!("{}__{}", imp.type_name, method.name), sig);
                     }
                 }
             }
@@ -477,11 +466,8 @@ impl<'ctx> Codegen<'ctx> {
                     .get(&def.name)
                     .copied()
                     .ok_or_else(|| format!("missing struct '{}'", def.name))?;
-                let field_types: Vec<BasicTypeEnum<'ctx>> = def
-                    .fields
-                    .iter()
-                    .map(|f| self.llvm_type(&f.ty))
-                    .collect();
+                let field_types: Vec<BasicTypeEnum<'ctx>> =
+                    def.fields.iter().map(|f| self.llvm_type(&f.ty)).collect();
                 st.set_body(&field_types, false);
             }
         }
@@ -497,7 +483,12 @@ impl<'ctx> Codegen<'ctx> {
                 Item::Impl(imp) => {
                     for method in &imp.methods {
                         let name = format!("{}__{}", imp.type_name, method.name);
-                        self.declare_function(&name, &method.params, &method.ret, Some(&imp.type_name))?;
+                        self.declare_function(
+                            &name,
+                            &method.params,
+                            &method.ret,
+                            Some(&imp.type_name),
+                        )?;
                     }
                 }
                 Item::Struct(_) => {}
@@ -599,51 +590,73 @@ impl<'ctx> Codegen<'ctx> {
             ],
             false,
         );
-        self.module
-            .add_function("pebbles_str_concat", concat, None);
+        self.module.add_function("pebbles_str_concat", concat, None);
 
-        let streq = self
-            .context
-            .bool_type()
-            .fn_type(
-                &[
-                    BasicMetadataTypeEnum::from(i8ptr),
-                    BasicMetadataTypeEnum::from(i8ptr),
-                ],
-                false,
-            );
+        let streq = self.context.bool_type().fn_type(
+            &[
+                BasicMetadataTypeEnum::from(i8ptr),
+                BasicMetadataTypeEnum::from(i8ptr),
+            ],
+            false,
+        );
         self.module.add_function("pebbles_str_eq", streq, None);
 
         let int_str = i32t.fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
         self.module.add_function("pebbles_int_str", int_str, None);
 
-        let float_str = self.context.f64_type().fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
-        self.module.add_function("pebbles_float_str", float_str, None);
+        let float_str = self
+            .context
+            .f64_type()
+            .fn_type(&[BasicMetadataTypeEnum::from(i8ptr)], false);
+        self.module
+            .add_function("pebbles_float_str", float_str, None);
 
-        let sqrt_f64 = self.context.f64_type().fn_type(&[BasicMetadataTypeEnum::from(self.context.f64_type())], false);
-        self.module.add_function("pebbles_sqrt_f64", sqrt_f64, None);
-
-        let str_index = i8ptr.fn_type(&[BasicMetadataTypeEnum::from(i8ptr), BasicMetadataTypeEnum::from(i32t)], false);
-        self.module.add_function("pebbles_str_index", str_index, None);
-
-        let array_new = self.array_ty.fn_type(
-            &[BasicMetadataTypeEnum::from(i32t), BasicMetadataTypeEnum::from(i32t)],
+        let sqrt_f64 = self.context.f64_type().fn_type(
+            &[BasicMetadataTypeEnum::from(self.context.f64_type())],
             false,
         );
-        self.module.add_function("pebbles_array_new", array_new, None);
+        self.module.add_function("pebbles_sqrt_f64", sqrt_f64, None);
+
+        let str_index = i8ptr.fn_type(
+            &[
+                BasicMetadataTypeEnum::from(i8ptr),
+                BasicMetadataTypeEnum::from(i32t),
+            ],
+            false,
+        );
+        self.module
+            .add_function("pebbles_str_index", str_index, None);
+
+        let array_new = self.array_ty.fn_type(
+            &[
+                BasicMetadataTypeEnum::from(i32t),
+                BasicMetadataTypeEnum::from(i32t),
+            ],
+            false,
+        );
+        self.module
+            .add_function("pebbles_array_new", array_new, None);
 
         let array_ptr = self.array_ty.ptr_type(AddressSpace::default());
         let array_push = voidt.fn_type(
-            &[BasicMetadataTypeEnum::from(array_ptr), BasicMetadataTypeEnum::from(i8ptr)],
+            &[
+                BasicMetadataTypeEnum::from(array_ptr),
+                BasicMetadataTypeEnum::from(i8ptr),
+            ],
             false,
         );
-        self.module.add_function("pebbles_array_push", array_push, None);
+        self.module
+            .add_function("pebbles_array_push", array_push, None);
 
         let array_pop = i1t.fn_type(
-            &[BasicMetadataTypeEnum::from(array_ptr), BasicMetadataTypeEnum::from(i8ptr)],
+            &[
+                BasicMetadataTypeEnum::from(array_ptr),
+                BasicMetadataTypeEnum::from(i8ptr),
+            ],
             false,
         );
-        self.module.add_function("pebbles_array_pop", array_pop, None);
+        self.module
+            .add_function("pebbles_array_pop", array_pop, None);
         Ok(())
     }
 
@@ -717,10 +730,7 @@ impl<'ctx> Codegen<'ctx> {
     fn codegen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match stmt {
             Stmt::Let {
-                name,
-                ty,
-                value,
-                ..
+                name, ty, value, ..
             } => {
                 let inferred = if ty.is_none() {
                     Some(self.infer_expr_type(value)?)
@@ -750,8 +760,7 @@ impl<'ctx> Codegen<'ctx> {
                 let ret_ty = self.current_ret.clone().unwrap_or(Type::Void);
                 let ret_val = if let Some(expr) = value {
                     let v = self.codegen_expr(expr, Some(&ret_ty))?;
-                    v.value
-                        .ok_or_else(|| "return expects value".to_string())?
+                    v.value.ok_or_else(|| "return expects value".to_string())?
                 } else {
                     self.b(self.builder.build_return(None))?;
                     return Ok(());
@@ -764,7 +773,9 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(())
             }
             Stmt::While { cond, body, .. } => self.codegen_while(cond, body),
-            Stmt::For { var, iter, body, .. } => self.codegen_for(var, iter, body),
+            Stmt::For {
+                var, iter, body, ..
+            } => self.codegen_for(var, iter, body),
             Stmt::Break { .. } => {
                 let target = *self
                     .break_stack
@@ -784,7 +795,11 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    fn codegen_expr(&mut self, expr: &Expr, expected: Option<&Type>) -> Result<CgValue<'ctx>, String> {
+    fn codegen_expr(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<CgValue<'ctx>, String> {
         match expr {
             Expr::Int(n, _) => Ok(CgValue {
                 value: Some(self.context.i32_type().const_int(*n as u64, true).into()),
@@ -795,7 +810,12 @@ impl<'ctx> Codegen<'ctx> {
                 ty: Type::F64,
             }),
             Expr::Bool(b, _) => Ok(CgValue {
-                value: Some(self.context.bool_type().const_int(u64::from(*b), false).into()),
+                value: Some(
+                    self.context
+                        .bool_type()
+                        .const_int(u64::from(*b), false)
+                        .into(),
+                ),
                 ty: Type::Bool,
             }),
             Expr::Str(s, _) => {
@@ -858,12 +878,24 @@ impl<'ctx> Codegen<'ctx> {
                     ty: tuple_ty,
                 })
             }
-            Expr::Range { start, end, inclusive, .. } => {
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
                 let s = self.codegen_expr(start, Some(&Type::I32))?;
                 let e = self.codegen_expr(end, Some(&Type::I32))?;
-                let s_val = s.value.ok_or_else(|| "range start expects value".to_string())?;
-                let e_val = e.value.ok_or_else(|| "range end expects value".to_string())?;
-                let i1 = self.context.bool_type().const_int(u64::from(*inclusive), false);
+                let s_val = s
+                    .value
+                    .ok_or_else(|| "range start expects value".to_string())?;
+                let e_val = e
+                    .value
+                    .ok_or_else(|| "range end expects value".to_string())?;
+                let i1 = self
+                    .context
+                    .bool_type()
+                    .const_int(u64::from(*inclusive), false);
                 let range_ty = self.llvm_type(&Type::Range).into_struct_type();
                 let mut cur = range_ty.get_undef();
                 cur = self
@@ -914,7 +946,9 @@ impl<'ctx> Codegen<'ctx> {
                 if !elems.is_empty() {
                     for (idx, expr) in elems.iter().enumerate() {
                         let v = self.codegen_expr(expr, Some(&elem_ty))?;
-                        let val = v.value.ok_or_else(|| "array elem expects value".to_string())?;
+                        let val = v
+                            .value
+                            .ok_or_else(|| "array elem expects value".to_string())?;
                         let idx_val = self.context.i32_type().const_int(idx as u64, false);
                         let ptr = self.array_elem_ptr_from_value(arr_val, idx_val, &elem_ty)?;
                         self.b(self.builder.build_store(ptr, val))?;
@@ -945,7 +979,9 @@ impl<'ctx> Codegen<'ctx> {
                         .1
                         .clone();
                     let val = self.codegen_expr(&expr, Some(field_ty))?;
-                    let v = val.value.ok_or_else(|| "struct field expects value".to_string())?;
+                    let v = val
+                        .value
+                        .ok_or_else(|| "struct field expects value".to_string())?;
                     cur = self
                         .b(self.builder.build_insert_value(cur, v, idx as u32, "field"))?
                         .into_struct_value();
@@ -977,7 +1013,9 @@ impl<'ctx> Codegen<'ctx> {
                     ty: field_ty,
                 })
             }
-            Expr::BinOp { op, left, right, .. } => {
+            Expr::BinOp {
+                op, left, right, ..
+            } => {
                 let lt = self.infer_expr_type(left)?;
                 let lv = self.codegen_expr(left, Some(&lt))?;
                 let rv = self.codegen_expr(right, Some(&lt))?;
@@ -1007,11 +1045,16 @@ impl<'ctx> Codegen<'ctx> {
                         .b(self.builder.build_not(v.into_int_value(), "not"))?
                         .into(),
                 };
-                Ok(CgValue { value: Some(res), ty: ot })
+                Ok(CgValue {
+                    value: Some(res),
+                    ty: ot,
+                })
             }
             Expr::Call { name, args, .. } => {
                 if name == "print" {
-                    let arg = args.first().ok_or_else(|| "print expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "print expects 1 arg".to_string())?;
                     let v = self.codegen_expr(arg, Some(&Type::Str))?;
                     let val = v.value.ok_or_else(|| "print expects value".to_string())?;
                     let f = self
@@ -1023,7 +1066,10 @@ impl<'ctx> Codegen<'ctx> {
                         &[BasicMetadataValueEnum::from(val)],
                         "print",
                     ))?;
-                    return Ok(CgValue { value: None, ty: Type::Void });
+                    return Ok(CgValue {
+                        value: None,
+                        ty: Type::Void,
+                    });
                 }
                 if name == "input" {
                     let f = self
@@ -1034,16 +1080,24 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self
                         .call_value(call)
                         .ok_or_else(|| "input returned void".to_string())?;
-                    return Ok(CgValue { value: Some(v), ty: Type::Str });
+                    return Ok(CgValue {
+                        value: Some(v),
+                        ty: Type::Str,
+                    });
                 }
                 if name == "len" {
-                    let arg = args.first().ok_or_else(|| "len expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "len expects 1 arg".to_string())?;
                     let arg_ty = self.infer_expr_type(arg)?;
                     if matches!(arg_ty, Type::Array(_)) {
                         let v = self.codegen_expr(arg, Some(&arg_ty))?;
                         let val = v.value.ok_or_else(|| "len expects value".to_string())?;
                         let len = self.array_len_from_value(val)?;
-                        return Ok(CgValue { value: Some(len.into()), ty: Type::I32 });
+                        return Ok(CgValue {
+                            value: Some(len.into()),
+                            ty: Type::I32,
+                        });
                     }
                     let v = self.codegen_expr(arg, Some(&Type::Str))?;
                     let val = v.value.ok_or_else(|| "len expects value".to_string())?;
@@ -1059,15 +1113,23 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self
                         .call_value(call)
                         .ok_or_else(|| "len returned void".to_string())?;
-                    return Ok(CgValue { value: Some(v), ty: Type::I32 });
+                    return Ok(CgValue {
+                        value: Some(v),
+                        ty: Type::I32,
+                    });
                 }
                 if name == "str" {
-                    let arg = args.first().ok_or_else(|| "str expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "str expects 1 arg".to_string())?;
                     let arg_ty = self.infer_expr_type(arg)?;
                     let v = self.codegen_expr(arg, Some(&arg_ty))?;
                     let val = v.value.ok_or_else(|| "str expects value".to_string())?;
                     if arg_ty == Type::Str {
-                        return Ok(CgValue { value: Some(val), ty: Type::Str });
+                        return Ok(CgValue {
+                            value: Some(val),
+                            ty: Type::Str,
+                        });
                     }
                     if arg_ty == Type::I32 {
                         let f = self
@@ -1082,12 +1144,17 @@ impl<'ctx> Codegen<'ctx> {
                         let v = self
                             .call_value(call)
                             .ok_or_else(|| "str returned void".to_string())?;
-                        return Ok(CgValue { value: Some(v), ty: Type::Str });
+                        return Ok(CgValue {
+                            value: Some(v),
+                            ty: Type::Str,
+                        });
                     }
                     return Err("str() only supports i32 and str for now".into());
                 }
                 if name == "int" {
-                    let arg = args.first().ok_or_else(|| "int expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "int expects 1 arg".to_string())?;
                     let v = self.codegen_expr(arg, Some(&Type::Str))?;
                     let val = v.value.ok_or_else(|| "int expects value".to_string())?;
                     let f = self
@@ -1102,10 +1169,15 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self
                         .call_value(call)
                         .ok_or_else(|| "int returned void".to_string())?;
-                    return Ok(CgValue { value: Some(v), ty: Type::I32 });
+                    return Ok(CgValue {
+                        value: Some(v),
+                        ty: Type::I32,
+                    });
                 }
                 if name == "float" {
-                    let arg = args.first().ok_or_else(|| "float expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "float expects 1 arg".to_string())?;
                     let v = self.codegen_expr(arg, Some(&Type::Str))?;
                     let val = v.value.ok_or_else(|| "float expects value".to_string())?;
                     let f = self
@@ -1120,10 +1192,15 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self
                         .call_value(call)
                         .ok_or_else(|| "float returned void".to_string())?;
-                    return Ok(CgValue { value: Some(v), ty: Type::F64 });
+                    return Ok(CgValue {
+                        value: Some(v),
+                        ty: Type::F64,
+                    });
                 }
                 if name == "sqrt" {
-                    let arg = args.first().ok_or_else(|| "sqrt expects 1 arg".to_string())?;
+                    let arg = args
+                        .first()
+                        .ok_or_else(|| "sqrt expects 1 arg".to_string())?;
                     let v = self.codegen_expr(arg, Some(&Type::F64))?;
                     let val = v.value.ok_or_else(|| "sqrt expects value".to_string())?;
                     let f = self
@@ -1138,7 +1215,10 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self
                         .call_value(call)
                         .ok_or_else(|| "sqrt returned void".to_string())?;
-                    return Ok(CgValue { value: Some(v), ty: Type::F64 });
+                    return Ok(CgValue {
+                        value: Some(v),
+                        ty: Type::F64,
+                    });
                 }
                 let sig = self
                     .sigs
@@ -1165,9 +1245,14 @@ impl<'ctx> Codegen<'ctx> {
                             .ok_or_else(|| "call returned void".to_string())?,
                     )
                 };
-                Ok(CgValue { value: ret, ty: sig.ret })
+                Ok(CgValue {
+                    value: ret,
+                    ty: sig.ret,
+                })
             }
-            Expr::MethodCall { obj, method, args, .. } => {
+            Expr::MethodCall {
+                obj, method, args, ..
+            } => {
                 let obj_ty = self.infer_expr_type(obj)?;
                 if let Type::Array(inner) = obj_ty {
                     match method.as_str() {
@@ -1175,10 +1260,15 @@ impl<'ctx> Codegen<'ctx> {
                             let arr = self.codegen_expr(obj, Some(&Type::Array(inner.clone())))?;
                             let val = arr.value.ok_or_else(|| "array expects value".to_string())?;
                             let len = self.array_len_from_value(val)?;
-                            return Ok(CgValue { value: Some(len.into()), ty: Type::I32 });
+                            return Ok(CgValue {
+                                value: Some(len.into()),
+                                ty: Type::I32,
+                            });
                         }
                         "push" => {
-                            let arg = args.first().ok_or_else(|| "push expects 1 arg".to_string())?;
+                            let arg = args
+                                .first()
+                                .ok_or_else(|| "push expects 1 arg".to_string())?;
                             let arr_ptr = match obj {
                                 Expr::Ident(name, _) => self.lookup_var(name)?,
                                 _ => return Err("push requires a mutable array variable".into()),
@@ -1206,7 +1296,10 @@ impl<'ctx> Codegen<'ctx> {
                                 ],
                                 "push",
                             ))?;
-                            return Ok(CgValue { value: None, ty: Type::Void });
+                            return Ok(CgValue {
+                                value: None,
+                                ty: Type::Void,
+                            });
                         }
                         "pop" => {
                             let arr_ptr = match obj {
@@ -1244,7 +1337,11 @@ impl<'ctx> Codegen<'ctx> {
                             val = self
                                 .b(self.builder.build_insert_value(val, popped, 0, "is_some"))?
                                 .into_struct_value();
-                            let loaded = self.b(self.builder.build_load(self.llvm_type(&inner), tmp, "pval"))?;
+                            let loaded = self.b(self.builder.build_load(
+                                self.llvm_type(&inner),
+                                tmp,
+                                "pval",
+                            ))?;
                             val = self
                                 .b(self.builder.build_insert_value(val, loaded, 1, "oval"))?
                                 .into_struct_value();
@@ -1254,11 +1351,16 @@ impl<'ctx> Codegen<'ctx> {
                             });
                         }
                         "contains" => {
-                            let arg = args.first().ok_or_else(|| "contains expects 1 arg".to_string())?;
+                            let arg = args
+                                .first()
+                                .ok_or_else(|| "contains expects 1 arg".to_string())?;
                             let arr = self.codegen_expr(obj, Some(&Type::Array(inner.clone())))?;
-                            let arr_val = arr.value.ok_or_else(|| "array expects value".to_string())?;
+                            let arr_val =
+                                arr.value.ok_or_else(|| "array expects value".to_string())?;
                             let needle = self.codegen_expr(arg, Some(&inner))?;
-                            let needle_val = needle.value.ok_or_else(|| "contains expects value".to_string())?;
+                            let needle_val = needle
+                                .value
+                                .ok_or_else(|| "contains expects value".to_string())?;
 
                             let func = self
                                 .current_fn
@@ -1281,7 +1383,11 @@ impl<'ctx> Codegen<'ctx> {
                             self.b(self.builder.build_unconditional_branch(cond_bb))?;
                             self.builder.position_at_end(cond_bb);
                             let cur = self
-                                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                                .b(self.builder.build_load(
+                                    self.context.i32_type(),
+                                    idx_alloca,
+                                    "i",
+                                ))?
                                 .into_int_value();
                             let len = self.array_len_from_value(arr_val)?;
                             let cmp = self.b(self.builder.build_int_compare(
@@ -1294,10 +1400,18 @@ impl<'ctx> Codegen<'ctx> {
 
                             self.builder.position_at_end(body_bb);
                             let elem_ptr = self.array_elem_ptr_from_value(arr_val, cur, &inner)?;
-                            let elem_val = self.b(self.builder.build_load(self.llvm_type(&inner), elem_ptr, "elem"))?;
+                            let elem_val = self.b(self.builder.build_load(
+                                self.llvm_type(&inner),
+                                elem_ptr,
+                                "elem",
+                            ))?;
                             let eq = self.compare_values(&inner, elem_val, needle_val)?;
                             let prev = self
-                                .b(self.builder.build_load(self.context.bool_type(), res_alloca, "prev"))?
+                                .b(self.builder.build_load(
+                                    self.context.bool_type(),
+                                    res_alloca,
+                                    "prev",
+                                ))?
                                 .into_int_value();
                             let new_val = self.b(self.builder.build_or(prev, eq, "or"))?;
                             self.b(self.builder.build_store(res_alloca, new_val))?;
@@ -1310,9 +1424,15 @@ impl<'ctx> Codegen<'ctx> {
                             self.b(self.builder.build_unconditional_branch(cond_bb))?;
 
                             self.builder.position_at_end(end_bb);
-                            let found = self
-                                .b(self.builder.build_load(self.context.bool_type(), res_alloca, "found"))?;
-                            return Ok(CgValue { value: Some(found.into()), ty: Type::Bool });
+                            let found = self.b(self.builder.build_load(
+                                self.context.bool_type(),
+                                res_alloca,
+                                "found",
+                            ))?;
+                            return Ok(CgValue {
+                                value: Some(found.into()),
+                                ty: Type::Bool,
+                            });
                         }
                         _ => return Err("unknown array method".into()),
                     }
@@ -1329,11 +1449,15 @@ impl<'ctx> Codegen<'ctx> {
                     .ok_or_else(|| format!("missing method '{f_name}'"))?;
                 let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
                 let obj_val = self.codegen_expr(obj, None)?;
-                let obj_arg = obj_val.value.ok_or_else(|| "method expects value".to_string())?;
+                let obj_arg = obj_val
+                    .value
+                    .ok_or_else(|| "method expects value".to_string())?;
                 llvm_args.push(obj_arg.into());
                 for arg in args {
                     let cv = self.codegen_expr(arg, None)?;
-                    let v = cv.value.ok_or_else(|| "method arg expects value".to_string())?;
+                    let v = cv
+                        .value
+                        .ok_or_else(|| "method arg expects value".to_string())?;
                     llvm_args.push(v.into());
                 }
                 let call = self.b(self.builder.build_call(f, &llvm_args, "mcall"))?;
@@ -1350,7 +1474,10 @@ impl<'ctx> Codegen<'ctx> {
                             .ok_or_else(|| "method returned void".to_string())?,
                     )
                 };
-                Ok(CgValue { value: ret, ty: sig.ret })
+                Ok(CgValue {
+                    value: ret,
+                    ty: sig.ret,
+                })
             }
             Expr::Cast { expr, ty, .. } => {
                 let from_ty = self.infer_expr_type(expr)?;
@@ -1362,7 +1489,9 @@ impl<'ctx> Codegen<'ctx> {
                     ty: ty.clone(),
                 })
             }
-            Expr::If { cond, then, else_, .. } => {
+            Expr::If {
+                cond, then, else_, ..
+            } => {
                 let inferred = if expected.is_none() {
                     Some(self.infer_expr_type(expr)?)
                 } else {
@@ -1388,9 +1517,17 @@ impl<'ctx> Codegen<'ctx> {
                         let arr_val = arr.value.ok_or_else(|| "index expects value".to_string())?;
                         let idx = self.codegen_expr(index, Some(&Type::I32))?;
                         let idx_val = idx.value.ok_or_else(|| "index expects value".to_string())?;
-                        let ptr = self.array_elem_ptr_from_value(arr_val, idx_val.into_int_value(), &inner)?;
-                        let val = self.b(self.builder.build_load(self.llvm_type(&inner), ptr, "idx"))?;
-                        Ok(CgValue { value: Some(val.into()), ty: inner })
+                        let ptr = self.array_elem_ptr_from_value(
+                            arr_val,
+                            idx_val.into_int_value(),
+                            &inner,
+                        )?;
+                        let val =
+                            self.b(self.builder.build_load(self.llvm_type(&inner), ptr, "idx"))?;
+                        Ok(CgValue {
+                            value: Some(val.into()),
+                            ty: inner,
+                        })
                     }
                     Type::Str => {
                         let s = self.codegen_expr(obj, Some(&Type::Str))?;
@@ -1412,7 +1549,10 @@ impl<'ctx> Codegen<'ctx> {
                         let v = self
                             .call_value(call)
                             .ok_or_else(|| "str_index returned void".to_string())?;
-                        Ok(CgValue { value: Some(v), ty: Type::Str })
+                        Ok(CgValue {
+                            value: Some(v),
+                            ty: Type::Str,
+                        })
                     }
                     _ => Err("indexing not supported".into()),
                 }
@@ -1427,10 +1567,7 @@ impl<'ctx> Codegen<'ctx> {
         else_: &Option<Vec<Stmt>>,
         expected: Option<&Type>,
     ) -> Result<CgValue<'ctx>, String> {
-        if expected.is_some()
-            && expected != Some(&Type::Void)
-            && else_.is_none()
-        {
+        if expected.is_some() && expected != Some(&Type::Void) && else_.is_none() {
             return Err("if expression with value requires else".into());
         }
         let cond_val = self.codegen_expr(cond, Some(&Type::Bool))?;
@@ -1446,14 +1583,19 @@ impl<'ctx> Codegen<'ctx> {
         let else_bb = self.context.append_basic_block(func, "else");
         let merge_bb = self.context.append_basic_block(func, "ifend");
 
-        self.b(
-            self.builder
-                .build_conditional_branch(cond_v, then_bb, else_bb),
-        )?;
+        self.b(self
+            .builder
+            .build_conditional_branch(cond_v, then_bb, else_bb))?;
 
         self.builder.position_at_end(then_bb);
         let then_val = self.codegen_block(then, expected)?;
-        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
             self.b(self.builder.build_unconditional_branch(merge_bb))?;
         }
         let then_end = self.builder.get_insert_block().unwrap();
@@ -1463,7 +1605,13 @@ impl<'ctx> Codegen<'ctx> {
             Some(stmts) => self.codegen_block(stmts, expected)?,
             None => None,
         };
-        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
             self.b(self.builder.build_unconditional_branch(merge_bb))?;
         }
         let else_end = self.builder.get_insert_block().unwrap();
@@ -1521,19 +1669,12 @@ impl<'ctx> Codegen<'ctx> {
                 self.context.append_basic_block(func, "match.next")
             };
 
-            let (cond, bindings) =
-                self.codegen_pattern_cond(&arm.pattern, subj_v, &subj_ty)?;
+            let (cond, bindings) = self.codegen_pattern_cond(&arm.pattern, subj_v, &subj_ty)?;
 
             if is_last {
-                self.b(
-                    self.builder
-                        .build_conditional_branch(cond, arm_bb, end_bb),
-                )?;
+                self.b(self.builder.build_conditional_branch(cond, arm_bb, end_bb))?;
             } else {
-                self.b(
-                    self.builder
-                        .build_conditional_branch(cond, arm_bb, next_bb),
-                )?;
+                self.b(self.builder.build_conditional_branch(cond, arm_bb, next_bb))?;
             }
 
             self.builder.position_at_end(arm_bb);
@@ -1552,7 +1693,13 @@ impl<'ctx> Codegen<'ctx> {
                 incoming.push((v, self.builder.get_insert_block().unwrap()));
             }
 
-            if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            if self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_none()
+            {
                 self.b(self.builder.build_unconditional_branch(end_bb))?;
             }
 
@@ -1564,7 +1711,10 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(end_bb);
         if exp_ty == Type::Void {
-            return Ok(CgValue { value: None, ty: exp_ty });
+            return Ok(CgValue {
+                value: None,
+                ty: exp_ty,
+            });
         }
         let llvm_ty = self.llvm_type(&exp_ty);
         let phi = self.b(self.builder.build_phi(llvm_ty, "matchtmp"))?;
@@ -1582,8 +1732,13 @@ impl<'ctx> Codegen<'ctx> {
         pattern: &Pattern,
         value: BasicValueEnum<'ctx>,
         ty: &Type,
-    ) -> Result<(inkwell::values::IntValue<'ctx>, Vec<(String, BasicValueEnum<'ctx>, Type)>), String>
-    {
+    ) -> Result<
+        (
+            inkwell::values::IntValue<'ctx>,
+            Vec<(String, BasicValueEnum<'ctx>, Type)>,
+        ),
+        String,
+    > {
         let true_val = self.context.bool_type().const_int(1, false);
         match pattern {
             Pattern::Wildcard => Ok((true_val, vec![])),
@@ -1591,12 +1746,28 @@ impl<'ctx> Codegen<'ctx> {
             Pattern::Int(n) => {
                 let v = value.into_int_value();
                 let c = self.context.i32_type().const_int(*n as u64, true);
-                Ok((self.b(self.builder.build_int_compare(inkwell::IntPredicate::EQ, v, c, "m_eq"))?, vec![]))
+                Ok((
+                    self.b(self.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        v,
+                        c,
+                        "m_eq",
+                    ))?,
+                    vec![],
+                ))
             }
             Pattern::Bool(b) => {
                 let v = value.into_int_value();
                 let c = self.context.bool_type().const_int(u64::from(*b), false);
-                Ok((self.b(self.builder.build_int_compare(inkwell::IntPredicate::EQ, v, c, "m_eq"))?, vec![]))
+                Ok((
+                    self.b(self.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        v,
+                        c,
+                        "m_eq",
+                    ))?,
+                    vec![],
+                ))
             }
             Pattern::Float(f) => {
                 let v = value.into_float_value();
@@ -1640,7 +1811,15 @@ impl<'ctx> Codegen<'ctx> {
                         .b(self.builder.build_extract_value(opt, 0, "is_some"))?
                         .into_int_value();
                     let zero = self.context.bool_type().const_int(0, false);
-                    Ok((self.b(self.builder.build_int_compare(inkwell::IntPredicate::EQ, is_some, zero, "isnone"))?, vec![]))
+                    Ok((
+                        self.b(self.builder.build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            is_some,
+                            zero,
+                            "isnone",
+                        ))?,
+                        vec![],
+                    ))
                 } else {
                     Err("none pattern on non-optional".into())
                 }
@@ -1654,8 +1833,7 @@ impl<'ctx> Codegen<'ctx> {
                     _ => return Err("tuple pattern on non-tuple".into()),
                 };
                 for (idx, pat) in pats.iter().enumerate() {
-                    let elem = self
-                        .b(self.builder.build_extract_value(tup, idx as u32, "te"))?;
+                    let elem = self.b(self.builder.build_extract_value(tup, idx as u32, "te"))?;
                     let t = elem_types.remove(0);
                     let (c, mut b) = self.codegen_pattern_cond(pat, elem, &t)?;
                     cond = self.b(self.builder.build_and(cond, c, "m_and"))?;
@@ -1682,8 +1860,8 @@ impl<'ctx> Codegen<'ctx> {
                         .get(field_name.as_str())
                         .cloned()
                         .ok_or_else(|| format!("unknown field '{field_name}'"))?;
-                    let field_val = self
-                        .b(self.builder.build_extract_value(st, idx as u32, "sf"))?;
+                    let field_val =
+                        self.b(self.builder.build_extract_value(st, idx as u32, "sf"))?;
                     let (c, mut b) = self.codegen_pattern_cond(pat, field_val, &fty)?;
                     cond = self.b(self.builder.build_and(cond, c, "m_and"))?;
                     binds.append(&mut b);
@@ -1737,10 +1915,9 @@ impl<'ctx> Codegen<'ctx> {
             .value
             .ok_or_else(|| "while condition expects value".to_string())?
             .into_int_value();
-        self.b(
-            self.builder
-                .build_conditional_branch(cond_v, body_bb, end_bb),
-        )?;
+        self.b(self
+            .builder
+            .build_conditional_branch(cond_v, body_bb, end_bb))?;
 
         self.builder.position_at_end(body_bb);
         self.break_stack.push(end_bb);
@@ -1748,7 +1925,13 @@ impl<'ctx> Codegen<'ctx> {
         self.codegen_block(body, None)?;
         self.break_stack.pop();
         self.continue_stack.pop();
-        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
             self.b(self.builder.build_unconditional_branch(cond_bb))?;
         }
 
@@ -1771,25 +1954,19 @@ impl<'ctx> Codegen<'ctx> {
                 .value
                 .ok_or_else(|| "for range expects value".to_string())?;
             let start = self
-                .b(self.builder.build_extract_value(
-                    range.into_struct_value(),
-                    0,
-                    "start",
-                ))?
+                .b(self
+                    .builder
+                    .build_extract_value(range.into_struct_value(), 0, "start"))?
                 .into_int_value();
             let end = self
-                .b(self.builder.build_extract_value(
-                    range.into_struct_value(),
-                    1,
-                    "end",
-                ))?
+                .b(self
+                    .builder
+                    .build_extract_value(range.into_struct_value(), 1, "end"))?
                 .into_int_value();
             let inclusive = self
-                .b(self.builder.build_extract_value(
-                    range.into_struct_value(),
-                    2,
-                    "incl",
-                ))?
+                .b(self
+                    .builder
+                    .build_extract_value(range.into_struct_value(), 2, "incl"))?
                 .into_int_value();
 
             let idx_alloca = self.create_entry_alloca(var, &Type::I32)?;
@@ -1805,7 +1982,9 @@ impl<'ctx> Codegen<'ctx> {
             self.b(self.builder.build_unconditional_branch(cond_bb))?;
             self.builder.position_at_end(cond_bb);
             let cur = self
-                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                .b(self
+                    .builder
+                    .build_load(self.context.i32_type(), idx_alloca, "i"))?
                 .into_int_value();
             let cmp_le = self.b(self.builder.build_int_compare(
                 inkwell::IntPredicate::SLE,
@@ -1821,10 +2000,9 @@ impl<'ctx> Codegen<'ctx> {
             ))?;
             let cmp = self.b(self.builder.build_select(inclusive, cmp_le, cmp_lt, "cmp"))?;
             let cmp_i1 = cmp.into_int_value();
-            self.b(
-                self.builder
-                    .build_conditional_branch(cmp_i1, body_bb, end_bb),
-            )?;
+            self.b(self
+                .builder
+                .build_conditional_branch(cmp_i1, body_bb, end_bb))?;
 
             self.builder.position_at_end(body_bb);
             self.break_stack.push(end_bb);
@@ -1832,13 +2010,21 @@ impl<'ctx> Codegen<'ctx> {
             self.codegen_block(body, None)?;
             self.break_stack.pop();
             self.continue_stack.pop();
-            if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+            if self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_none()
+            {
                 self.b(self.builder.build_unconditional_branch(incr_bb))?;
             }
 
             self.builder.position_at_end(incr_bb);
             let cur = self
-                .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+                .b(self
+                    .builder
+                    .build_load(self.context.i32_type(), idx_alloca, "i"))?
                 .into_int_value();
             let next = self.b(self.builder.build_int_add(
                 cur,
@@ -1861,14 +2047,14 @@ impl<'ctx> Codegen<'ctx> {
         let arr = arr_val
             .value
             .ok_or_else(|| "for array expects value".to_string())?;
-        let arr_alloca = self.create_entry_alloca("arr", &Type::Array(Box::new(elem_ty.clone())))?;
+        let arr_alloca =
+            self.create_entry_alloca("arr", &Type::Array(Box::new(elem_ty.clone())))?;
         self.b(self.builder.build_store(arr_alloca, arr))?;
 
         let idx_alloca = self.create_entry_alloca("i", &Type::I32)?;
-        self.b(self.builder.build_store(
-            idx_alloca,
-            self.context.i32_type().const_int(0, false),
-        ))?;
+        self.b(self
+            .builder
+            .build_store(idx_alloca, self.context.i32_type().const_int(0, false)))?;
         self.push_scope();
         let var_alloca = self.create_entry_alloca(var, &elem_ty)?;
         self.bind_var(var, elem_ty.clone(), var_alloca);
@@ -1881,7 +2067,9 @@ impl<'ctx> Codegen<'ctx> {
         self.b(self.builder.build_unconditional_branch(cond_bb))?;
         self.builder.position_at_end(cond_bb);
         let cur = self
-            .b(self.builder.build_load(self.context.i32_type(), idx_alloca, "i"))?
+            .b(self
+                .builder
+                .build_load(self.context.i32_type(), idx_alloca, "i"))?
             .into_int_value();
         let arr_loaded = self.b(self.builder.build_load(
             self.llvm_type(&Type::Array(Box::new(elem_ty.clone()))),
@@ -1889,24 +2077,31 @@ impl<'ctx> Codegen<'ctx> {
             "arr",
         ))?;
         let len = self.array_len_from_value(arr_loaded.into())?;
-        let cmp = self.b(self.builder.build_int_compare(
-            inkwell::IntPredicate::SLT,
-            cur,
-            len,
-            "cmplt",
-        ))?;
+        let cmp =
+            self.b(self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, cur, len, "cmplt"))?;
         self.b(self.builder.build_conditional_branch(cmp, body_bb, end_bb))?;
 
         self.builder.position_at_end(body_bb);
         let elem_ptr = self.array_elem_ptr_from_value(arr_loaded.into(), cur, &elem_ty)?;
-        let elem_val = self.b(self.builder.build_load(self.llvm_type(&elem_ty), elem_ptr, "elem"))?;
+        let elem_val =
+            self.b(self
+                .builder
+                .build_load(self.llvm_type(&elem_ty), elem_ptr, "elem"))?;
         self.b(self.builder.build_store(var_alloca, elem_val))?;
         self.break_stack.push(end_bb);
         self.continue_stack.push(incr_bb);
         self.codegen_block(body, None)?;
         self.break_stack.pop();
         self.continue_stack.pop();
-        if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
             self.b(self.builder.build_unconditional_branch(incr_bb))?;
         }
 
@@ -1968,17 +2163,22 @@ impl<'ctx> Codegen<'ctx> {
                         BinOp::Add => self.b(self.builder.build_int_add(lv, rv, "iadd"))?,
                         BinOp::Sub => self.b(self.builder.build_int_sub(lv, rv, "isub"))?,
                         BinOp::Mul => self.b(self.builder.build_int_mul(lv, rv, "imul"))?,
-                        BinOp::Div => self
-                            .b(self.builder.build_int_signed_div(lv, rv, "idiv"))?,
-                        BinOp::Mod => self
-                            .b(self.builder.build_int_signed_rem(lv, rv, "irem"))?,
+                        BinOp::Div => self.b(self.builder.build_int_signed_div(lv, rv, "idiv"))?,
+                        BinOp::Mod => self.b(self.builder.build_int_signed_rem(lv, rv, "irem"))?,
                         _ => unreachable!(),
                     };
                     Ok(v.into())
                 }
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
-                if matches!(ty, Type::Tuple(_) | Type::Optional(_) | Type::Named(_) | Type::Range | Type::Array(_)) {
+                if matches!(
+                    ty,
+                    Type::Tuple(_)
+                        | Type::Optional(_)
+                        | Type::Named(_)
+                        | Type::Range
+                        | Type::Array(_)
+                ) {
                     let mut v = self.compare_values(ty, l, r)?;
                     if op == BinOp::NotEq {
                         v = self.b(self.builder.build_not(v, "not"))?;
@@ -2128,7 +2328,8 @@ impl<'ctx> Codegen<'ctx> {
                 ))?;
                 let idx = self.codegen_expr(index, Some(&Type::I32))?;
                 let idx_val = idx.value.ok_or_else(|| "index expects value".to_string())?;
-                let elem_ptr = self.array_elem_ptr_from_value(arr_val, idx_val.into_int_value(), &elem_ty)?;
+                let elem_ptr =
+                    self.array_elem_ptr_from_value(arr_val, idx_val.into_int_value(), &elem_ty)?;
                 Ok((elem_ptr, elem_ty))
             }
         }
@@ -2164,12 +2365,9 @@ impl<'ctx> Codegen<'ctx> {
 
         let base_ptr = self.codegen_lvalue(obj)?;
         let field_ptr = unsafe {
-            self.b(self.builder.build_struct_gep(
-                st,
-                base_ptr,
-                field_idx as u32,
-                "fieldptr",
-            ))?
+            self.b(self
+                .builder
+                .build_struct_gep(st, base_ptr, field_idx as u32, "fieldptr"))?
         };
         Ok((field_ptr, field_ty))
     }
@@ -2184,7 +2382,9 @@ impl<'ctx> Codegen<'ctx> {
             _ => {
                 let val = self.codegen_expr(expr, None)?;
                 let ty = val.ty;
-                let v = val.value.ok_or_else(|| "lvalue expects value".to_string())?;
+                let v = val
+                    .value
+                    .ok_or_else(|| "lvalue expects value".to_string())?;
                 let alloca = self.create_entry_alloca("tmp", &ty)?;
                 self.b(self.builder.build_store(alloca, v))?;
                 Ok(alloca)
@@ -2285,7 +2485,9 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Err(format!("unknown field '{field}'"))
             }
-            Expr::BinOp { op, left, right, .. } => {
+            Expr::BinOp {
+                op, left, right, ..
+            } => {
                 let lt = self.infer_expr_type(left)?;
                 let rt = self.infer_expr_type(right)?;
                 if lt != rt {
@@ -2298,13 +2500,7 @@ impl<'ctx> Codegen<'ctx> {
                 .sigs
                 .get(name)
                 .map(|s| s.ret.clone())
-                .or_else(|| {
-                    if name == "str" {
-                        Some(Type::Str)
-                    } else {
-                        None
-                    }
-                })
+                .or_else(|| if name == "str" { Some(Type::Str) } else { None })
                 .ok_or_else(|| format!("unknown function '{name}'")),
             Expr::MethodCall { obj, method, .. } => {
                 let obj_ty = self.infer_expr_type(obj)?;
@@ -2451,5 +2647,4 @@ impl<'ctx> Codegen<'ctx> {
             Type::Void => self.context.i8_type().into(),
         }
     }
-
 }
